@@ -1,0 +1,11 @@
+{
+  "name": "UserMark",
+  "description": "长按消息给盯的人挂自定义备注，设置页里管理名单。",
+  "authors": [
+    {
+      "name": "星薄荷"
+    }
+  ],
+  "main": "index.js",
+  "hash": "f37f555188bfcfa6c70e711b8e9397f1b86e338376e7753a16770b08c163b44d"
+}

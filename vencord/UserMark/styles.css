@@ -1,0 +1,19 @@
+/* UserMark 徽标：名字后面那枚 [被标记] */
+.vc-usermark-badge {
+    display: inline-block;
+    padding: 0 4px;
+    border-radius: 4px;
+    background: var(--status-danger, #f23f43);
+    color: #fff;
+    font-size: 10px;
+    font-weight: 600;
+    line-height: 15px;
+    vertical-align: middle;
+    cursor: default;
+    user-select: none;
+}
+
+/* 设置页里的名单卡片 */
+.vc-usermark-card {
+    padding: 10px;
+}
