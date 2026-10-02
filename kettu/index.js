@@ -126,6 +126,15 @@
        拿到组件返回的 JSX 后，遍历树找「一堆带 label+onPress 的行」，
        往里塞我们自己的项 —— 比按死层级路径耐版本变化。 */
 
+    function isMenuRow(node) {
+        return !!(
+            node && typeof node === "object" && !Array.isArray(node)
+            && node.props && typeof node.props.onPress === "function"
+            && (node.props.label != null || node.props.text != null
+                || node.props.title != null || node.props.children != null)
+        );
+    }
+
     function findMenuRows(root) {
         const queue = [root];
         let best = null;
@@ -135,22 +144,18 @@
             if (!node) continue;
 
             if (Array.isArray(node)) {
-                const rows = node.filter(c =>
-                    c &&
-                    typeof c === "object" &&
-                    c.props &&
-                    typeof c.props.onPress === "function" &&
-                    (c.props.label != null || c.props.text != null || c.props.title != null)
-                );
+                const rows = node.filter(isMenuRow);
 
-                if (rows.length >= 2 && (!best || rows.length > best.length)) best = node;
+                // 放宽到一行也要：面板已经锁定是消息长按，卡「至少两行」反而抓不到分组结构
+                if (rows.length >= 1 && (!best || rows.length > best.length)) best = node;
 
                 for (const child of node) queue.push(child);
                 continue;
             }
 
-            if (typeof node === "object") {
-                if (node.props) queue.push(node.props.children);
+            if (typeof node === "object" && node.props) {
+                const p = node.props;
+                queue.push(p.children, p.rows, p.options, p.actions, p.items);
             }
         }
 
@@ -176,6 +181,8 @@
                         logger.warn("长按菜单里没定位到按钮数组");
                         return;
                     }
+
+                    if (rows.some(r => isMenuRow(r) && r.props.key === "usermark-mark")) return;
 
                     const existing = getMark(author.id);
                     const sourceMessage = props.message;
@@ -209,6 +216,335 @@
                 }
             })
         );
+    }
+
+    /* ============ 策略二：openLazy 懒加载的面板 ============
+       有些版本消息长按面板是 openLazy 拉起来的，EmojiRow 那条路挂不上。
+       这里盯住 openLazy，组件一解析完就补一次丁。 */
+
+    const patchedComponents = new WeakSet();
+
+    function injectMarkRow(props, res) {
+        const message = props && props.message;
+        const author = message && message.author;
+        if (!author || !author.id) return false;
+
+        const rows = findMenuRows(res);
+        if (!rows) return false;
+        if (rows.some(r => isMenuRow(r) && r.props.key === "usermark-mark")) return true;
+
+        const existing = getMark(author.id);
+        rows.push(React.createElement(Forms.FormRow, {
+            key: "usermark-mark",
+            label: existing ? "编辑标记备注" : "标记此用户",
+            onPress: () => { hideSheet(); askNote(author, message); },
+        }));
+        if (existing) {
+            rows.push(React.createElement(Forms.FormRow, {
+                key: "usermark-unmark",
+                label: "取消标记",
+                onPress: () => { hideSheet(); removeMark(author.id); ui.toasts.showToast("已取消标记"); },
+            }));
+        }
+        return true;
+    }
+
+    function patchLazyComponent(mod) {
+        try {
+            const target = mod && mod.default;
+            if (!target || typeof target !== "function" || patchedComponents.has(target)) return;
+            patchedComponents.add(target);
+
+            unpatches.push(patcher.after("default", mod, (args, res) => {
+                try {
+                    injectMarkRow(args && args[0], res);
+                } catch (e) {
+                    logger.error("注入标记菜单失败", e);
+                }
+            }));
+            logger.log("已补丁懒加载的长按面板");
+        } catch (e) {
+            logger.warn("补丁懒加载组件失败", e);
+        }
+    }
+
+    function patchOpenLazy() {
+        try {
+            const mod = metro.findByProps("openLazy", "hideActionSheet");
+            if (!mod || typeof mod.openLazy !== "function") {
+                logger.warn("openLazy 模块没找到，策略二不可用");
+                return;
+            }
+
+            unpatches.push(patcher.before("openLazy", mod, (args) => {
+                try {
+                    const key = args && args[1];
+                    if (typeof key === "string" && !/message|long|sheet|action|jump/i.test(key)) return;
+
+                    const lazy = args && args[0];
+                    if (lazy && typeof lazy.then === "function") lazy.then(patchLazyComponent, () => { });
+                } catch (e) {
+                    logger.warn("openLazy 观察失败", e);
+                }
+            }));
+            logger.log("策略二已挂：openLazy");
+        } catch (e) {
+            logger.warn("openLazy 挂载失败", e);
+        }
+    }
+
+    /* ============ 消息日志（原 vc-message-logger-enhanced 精简并入） ============
+       手机端没有 IndexedDB，直接放 plugin.storage（MMKV）。
+       记：收到 / 编辑 / 删除，名单里的用户发言随时能在设置页里翻。 */
+
+    const DEFAULT_LOG_LIMIT = 1000;
+    const S = { NORMAL: 0, DELETED: 1, EDITED: 2 };
+    const STATUS_TEXT = ["普通", "已删除", "已编辑"];
+
+    function getLogLimit() {
+        const n = Number(plugin.storage.messageLimit);
+        return Number.isFinite(n) && n > 0 ? Math.floor(n) : DEFAULT_LOG_LIMIT;
+    }
+
+    function readLogs() {
+        try {
+            const logs = plugin.storage.logs;
+            return Array.isArray(logs) ? JSON.parse(JSON.stringify(logs)) : [];
+        } catch (e) {
+            logger.warn("读取日志失败", e);
+            return [];
+        }
+    }
+
+    function writeLogs(logs) {
+        try {
+            const limit = getLogLimit();
+            plugin.storage.logs = JSON.parse(JSON.stringify(logs.slice(0, limit)));
+        } catch (e) {
+            logger.error("写入日志失败", e);
+        }
+    }
+
+    function slimMessage(message) {
+        if (!message || !message.id) return null;
+        const author = message.author;
+        return {
+            id: String(message.id),
+            channel_id: message.channel_id ? String(message.channel_id) : undefined,
+            author: author && author.id ? {
+                id: String(author.id),
+                username: author.username || "",
+                global_name: author.globalName ?? author.global_name ?? undefined,
+                avatar: author.avatar ?? undefined,
+                discriminator: author.discriminator ?? undefined,
+            } : undefined,
+            content: typeof message.content === "string" ? message.content.slice(0, 2000) : "",
+            timestamp: typeof message.timestamp === "string" ? message.timestamp
+                : message.timestamp instanceof Date ? message.timestamp.toISOString() : undefined,
+        };
+    }
+
+    /** 有旧记录就合并（UPDATE 常常只带部分字段），没有就新建 */
+    function upsertLog(status, message) {
+        try {
+            const slim = slimMessage(message);
+            if (!slim || !slim.id) return;
+
+            const logs = readLogs();
+            const idx = logs.findIndex(x => x && x.id === slim.id);
+            const prev = idx >= 0 ? logs[idx] : undefined;
+
+            const incoming = {};
+            for (const [k, v] of Object.entries(slim)) {
+                if (v !== undefined && v !== "") incoming[k] = v;
+            }
+            const merged = prev ? { ...prev.message, ...incoming } : slim;
+            if (prev && prev.message) {
+                if (!merged.author) merged.author = prev.message.author;
+                if (!merged.content && prev.message.content) merged.content = prev.message.content;
+            }
+
+            let nextStatus = status;
+            let editHistory = prev ? prev.editHistory : undefined;
+            const contentChanged = prev && prev.message && prev.status !== S.DELETED
+                && typeof prev.message.content === "string" && typeof merged.content === "string"
+                && prev.message.content !== merged.content;
+
+            if (status === S.NORMAL && contentChanged) {
+                editHistory = [...(editHistory || []), { content: prev.message.content, ts: prev.ts }].slice(-10);
+                nextStatus = S.EDITED;
+            } else if (prev) {
+                if (prev.status === S.DELETED) nextStatus = S.DELETED;
+                else if (prev.status === S.EDITED) nextStatus = S.EDITED;
+            }
+
+            const rec = { id: slim.id, status: nextStatus, ts: Date.now(), message: merged, editHistory };
+            if (idx >= 0) logs[idx] = rec;
+            else logs.unshift(rec);
+
+            writeLogs(logs);
+        } catch (e) {
+            logger.error("记录消息失败", e);
+        }
+    }
+
+    function markDeleted(ids) {
+        try {
+            const list = (ids || []).map(String).filter(Boolean);
+            if (!list.length) return;
+
+            const logs = readLogs();
+            let changed = false;
+            for (const id of list) {
+                const rec = logs.find(x => x && String(x.id) === id);
+                if (rec) {
+                    if (rec.status !== S.DELETED) { rec.status = S.DELETED; rec.ts = Date.now(); changed = true; }
+                } else {
+                    // 库里没有就记个空壳，至少知道这条被删了
+                    logs.unshift({ id, status: S.DELETED, ts: Date.now(), message: { id, content: "" } });
+                    changed = true;
+                }
+            }
+            if (changed) writeLogs(logs);
+        } catch (e) {
+            logger.error("标记删除失败", e);
+        }
+    }
+
+    function onDispatch(args) {
+        try {
+            const action = args && args[0];
+            if (!action || typeof action.type !== "string") return;
+
+            switch (action.type) {
+                case "MESSAGE_CREATE": {
+                    const m = action.message;
+                    if (m && m.id) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId, guild_id: m.guild_id || action.guildId });
+                    break;
+                }
+                case "MESSAGE_UPDATE": {
+                    const m = action.message;
+                    if (m && m.id) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId });
+                    break;
+                }
+                case "MESSAGE_DELETE":
+                    markDeleted([action.id || (action.message && action.message.id)]);
+                    break;
+                case "MESSAGE_DELETE_BULK":
+                    markDeleted(action.ids);
+                    break;
+            }
+        } catch (e) {
+            logger.error("日志处理失败", e);
+        }
+    }
+
+    function startLogger() {
+        const candidates = [
+            () => metro.findByProps("subscribe", "dispatch"),
+            () => metro.findByProps("dispatch", "subscribe", "wait"),
+        ];
+
+        for (const get of candidates) {
+            try {
+                const d = get();
+                if (d && typeof d.dispatch === "function" && typeof d.subscribe === "function") {
+                    unpatches.push(patcher.before("dispatch", d, onDispatch));
+                    logger.log("消息日志已启动");
+                    return;
+                }
+            } catch { /* 换下一个候选 */ }
+        }
+
+        logger.warn("没找到 FluxDispatcher，消息日志不可用");
+    }
+
+    function deleteLog(id) {
+        try {
+            writeLogs(readLogs().filter(r => r && r.id !== id));
+        } catch (e) {
+            logger.error("删除记录失败", e);
+        }
+    }
+
+    function askLogLimit() {
+        const current = getLogLimit();
+        ui.alerts.showInputAlert({
+            title: "日志上限",
+            placeholder: String(current),
+            initialValue: String(current),
+            confirmText: "保存",
+            cancelText: "取消",
+            onConfirm: text => {
+                try {
+                    const n = Math.floor(Number(text));
+                    if (Number.isFinite(n) && n > 0 && n <= 20000) plugin.storage.messageLimit = n;
+                } catch (e) {
+                    logger.warn("设置日志上限失败", e);
+                }
+            },
+        });
+    }
+
+    function openLogRowMenu(rec, refresh) {
+        const sheet = metro.findByProps("showSimpleActionSheet");
+        if (!sheet) return;
+
+        const m = rec.message || {};
+        sheet.showSimpleActionSheet({
+            key: "UserMarkLogRow",
+            header: { title: (m.content || "（无内容）").slice(0, 60) },
+            options: [
+                {
+                    label: "复制内容",
+                    onPress: () => {
+                        try {
+                            if (ui.clipboard && typeof ui.clipboard.setString === "function") {
+                                ui.clipboard.setString(m.content || "");
+                                ui.toasts.showToast("已复制");
+                            } else {
+                                ui.toasts.showToast("这个端没有剪贴板接口");
+                            }
+                        } catch (e) {
+                            logger.warn("复制失败", e);
+                        }
+                    },
+                },
+                {
+                    label: "删除记录",
+                    isDestructive: true,
+                    onPress: () => { deleteLog(rec.id); refresh(); },
+                },
+            ],
+        });
+    }
+
+    function renderLogRows(list, refresh) {
+        if (!list.length) {
+            return [React.createElement(Forms.FormRow, {
+                key: "no-log",
+                label: "还没有记录",
+                subtext: "收到消息后自动写入",
+                disabled: true,
+            })];
+        }
+
+        return list.map(rec => {
+            const m = (rec && rec.message) || {};
+            const who = m.author
+                ? (m.author.global_name || m.author.username || m.author.id)
+                : "未知用户";
+            const body = String(m.content || "").replace(/\s+/g, " ").trim();
+            const preview = body ? (body.length > 40 ? body.slice(0, 40) + "…" : body) : "（无文字内容）";
+            const when = rec.ts ? new Date(rec.ts).toLocaleTimeString() : "";
+
+            return React.createElement(Forms.FormRow, {
+                key: `${rec.id}_${rec.ts}`,
+                label: preview,
+                subtext: `${who} · ${STATUS_TEXT[rec.status] || "普通"} · ${when}`,
+                onPress: () => openLogRowMenu(rec, refresh),
+            });
+        });
     }
 
     /* ================= 设置面板 ================= */
@@ -284,10 +620,43 @@
             }
         }
 
-        return React.createElement(
+        const markedSection = React.createElement(
             Forms.FormSection,
             { title: `被标记用户（${ids.length}）` },
             ...children
+        );
+
+        const logs = readLogs();
+        const markedIds = new Set(ids);
+        const markedLogs = logs.filter(r => r && r.message && r.message.author && markedIds.has(r.message.author.id));
+
+        return React.createElement(
+            React.Fragment,
+            null,
+            markedSection,
+            React.createElement(
+                Forms.FormSection,
+                { title: `标记用户发言（${markedLogs.length}）` },
+                ...renderLogRows(markedLogs.slice(0, 30), forceUpdate)
+            ),
+            React.createElement(
+                Forms.FormSection,
+                { title: `消息日志（${logs.length}/${getLogLimit()}）` },
+                ...renderLogRows(logs.slice(0, 30), forceUpdate),
+                React.createElement(Forms.FormRow, {
+                    key: "log-limit",
+                    label: `日志上限：${getLogLimit()} 条`,
+                    subtext: "超过就丢最旧的",
+                    onPress: askLogLimit,
+                }),
+                React.createElement(Forms.FormRow, {
+                    key: "log-clear",
+                    label: "清空日志",
+                    subtext: "删掉所有已记录消息",
+                    destructive: true,
+                    onPress: () => { writeLogs([]); forceUpdate(); },
+                })
+            )
         );
     }
 
@@ -299,6 +668,16 @@
                 patchMessageSheet();
             } catch (e) {
                 logger.error("挂载长按菜单失败", e);
+            }
+            try {
+                patchOpenLazy();
+            } catch (e) {
+                logger.warn("挂载策略二失败", e);
+            }
+            try {
+                startLogger();
+            } catch (e) {
+                logger.warn("启动消息日志失败", e);
             }
             logger.log("UserMark 已加载");
         },
