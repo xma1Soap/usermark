@@ -38,7 +38,12 @@
         try {
             const store = plugin.storage;
             const marks = store && store.marks;
-            return marks && typeof marks === "object" ? marks : {};
+            if (!marks || typeof marks !== "object") return {};
+
+            // MMKV 响应式代理里取出来的值可能还是代理。桌面端就是栽在这上面：
+            // 代理进不了 IPC 的结构化克隆，写盘直接失败，重启只剩第一条。
+            // 这里统一过一道 JSON，拿到的保证是纯对象。
+            return JSON.parse(JSON.stringify(marks));
         } catch (e) {
             logger.warn("读取标记数据失败", e);
             return {};
@@ -103,8 +108,14 @@
             confirmText: existing ? "保存" : "标记",
             cancelText: "取消",
             onConfirm: text => {
-                setMark(author.id, text, name, sourceFromMessage(message));
-                ui.toasts.showToast(existing ? `已更新 ${name} 的备注` : `已标记 ${name}`);
+                // 保存失败也绝不能把弹窗卡住：先存，存不动就吞掉异常，弹窗自己会关
+                try {
+                    setMark(author.id, text, name, sourceFromMessage(message));
+                } catch (e) {
+                    logger.error("标记失败", e);
+                }
+                // 不弹 toast：桌面端这个提示会渲染成一个空白圆圈，
+                // 标记结果本身已经看得见（菜单里变成取消标记、名单里多一行）
             },
         });
     }

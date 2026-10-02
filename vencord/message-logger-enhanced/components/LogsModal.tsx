@@ -15,7 +15,7 @@ import { closeAllModals, ModalContent, ModalFooter, ModalHeader, ModalProps, Mod
 import { LazyComponent } from "@utils/react";
 import type { Channel, User } from "@vencord/discord-types";
 import { find, findByCodeLazy } from "@webpack";
-import { Alerts, ChannelStore, ContextMenuApi, FluxDispatcher, Menu, NavigationRouter, React, showToast,TabBar, TextInput, Tooltip, useEffect, useMemo, useRef, useState } from "@webpack/common";
+import { Alerts, ChannelStore, ContextMenuApi, FluxDispatcher, Menu, NavigationRouter, React, showToast,TabBar, TextInput, Tooltip, useEffect, useMemo, useRef, UserStore, UserUtils, useState } from "@webpack/common";
 
 import { DBMessageRecord, deleteMessageIDB, deleteMessagesBulkIDB } from "../db";
 import { settings } from "../index";
@@ -340,8 +340,32 @@ interface LMessageProps {
     isGroupStart: boolean,
     reset: () => void;
 }
+/** 正在按 id补人的名单，防止同一条消息反复发请求 */
+const pendingAuthorFetches = new Set<string>();
+
 function LMessage({ log, isGroupStart, reset, }: LMessageProps) {
+    const [, bumpAuthor] = useState(0);
     const message = useMemo(() => messageJsonToMessageClass(log), [log]);
+
+    const authorId = log.message?.author?.id;
+
+    // 用户不在缓存里时，头像会拼成空灰圈：按 id补一次人，回来后重算
+    useEffect(() => {
+        if (!authorId || UserStore.getUser(authorId)) return;
+        if (pendingAuthorFetches.has(authorId)) return;
+
+        pendingAuthorFetches.add(authorId);
+        UserUtils.getUser(authorId)
+            .then(() => bumpAuthor(x => x + 1))
+            .catch(() => { /* 拉不到就用库里那份，至少有个默认头像 */ })
+            .finally(() => pendingAuthorFetches.delete(authorId));
+    }, [authorId]);
+
+    // 拿到实时用户就换上（当前头像哈希、当前昵称）
+    if (message && authorId) {
+        const live = UserStore.getUser(authorId);
+        if (live && message.author !== live) (message as any).author = live;
+    }
 
     // 这条是不是某个人被标记时用的那条消息，是就高亮出来
     const isMarkSource = useMemo(() => {
