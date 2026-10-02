@@ -487,6 +487,43 @@
         logger.warn("没找到 FluxDispatcher，消息日志不可用");
     }
 
+    /** 一键把定位线索写进日志：到底是模块没了，还是行结构对不上 */
+    function runDiag() {
+        const report = [];
+        const probes = ["EmojiRow", "ActionSheetRow", "MessageLongPress", "MessageActionSheet", "hideActionSheet", "openLazy", "showSimpleActionSheet"];
+
+        for (const p of probes) {
+            try {
+                const found = metro.findByProps(p);
+                report.push(`${p}=${found ? "有" : "无"}`);
+            } catch (e) {
+                report.push(`${p}=错`);
+            }
+        }
+
+        try {
+            const hits = [];
+            metro.find(m => {
+                try {
+                    const d = m && m.default;
+                    if (typeof d === "function" && hits.length < 10) {
+                        const s = String(d);
+                        for (const marker of ["EmojiRow", "MessageLongPress", "ActionSheetRow", "hideActionSheet", "FormRow"]) {
+                            if (s.includes(marker)) hits.push(`${marker}→${d.displayName || d.name || "匿名"}`);
+                        }
+                    }
+                } catch { /* 单个模块取不到就算了 */ }
+                return false;
+            });
+            report.push(`源码命中=[${hits.join(", ") || "无"}]`);
+        } catch (e) {
+            report.push(`扫描失败=${e && e.message}`);
+        }
+
+        logger.warn("【诊断】" + report.join(" | "));
+        try { ui.toasts.showToast("诊断已写入日志"); } catch { }
+    }
+
     /** 菜单进不来时的保底入口：一条输入框搞定标记 */
     function askMarkById() {
         ui.alerts.showInputAlert({
@@ -692,6 +729,12 @@
                 label: "按 ID 标记一个用户",
                 subtext: "长按菜单进不来时用这个：输入 用户ID 备注",
                 onPress: askMarkById,
+            }),
+            React.createElement(Forms.FormRow, {
+                key: "mark-diag",
+                label: "跑一次菜单定位诊断",
+                subtext: "结果写进日志，发给白娅即可",
+                onPress: runDiag,
             })
         );
 
