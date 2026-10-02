@@ -470,7 +470,8 @@
                 }
                 case "MESSAGE_UPDATE": {
                     const m = action.message;
-                    if (m && m.id && isMarkedAuthor(m.author)) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId });
+                    // 更新包里不一定带 author：已有记录的也要能改，否则编辑抓不到
+                    if (m && m.id && (isMarkedAuthor(m.author) || hasLog(m.id))) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId });
                     break;
                 }
                 case "MESSAGE_DELETE": {
