@@ -132,8 +132,19 @@ function collectFibers(el: Element): FiberDump[] {
 }
 
 function readStore(): Capture[] {
-    const value = settings.store.probe;
-    return Array.isArray(value) ? (value as Capture[]) : [];
+    // 同样从 plain 读：store 是 Proxy，存回去会让 Electron IPC 结构化克隆失败
+    try {
+        const raw = settings.plain?.probe;
+        if (!Array.isArray(raw)) return [];
+        return JSON.parse(JSON.stringify(raw));
+    } catch {
+        return [];
+    }
+}
+
+function writeStore(list: Capture[]): void {
+    // 必须赋一个新数组：值相同时 store 的 set 钩子会直接 return，不触发落盘
+    settings.store.probe = [...list];
 }
 
 function isSearchInput(el: Element): boolean {
@@ -204,7 +215,11 @@ function capture(trigger: string, el: Element, label: string): void {
         fibers,
     });
 
-    settings.store.probe = current;
+    try {
+        writeStore(current);
+    } catch (e) {
+        console.error("[UserMark] 保存探针数据失败", e);
+    }
 }
 
 export function startProbe(): void {

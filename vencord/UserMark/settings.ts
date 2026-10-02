@@ -83,7 +83,20 @@ export const settings = definePluginSettings({
 });
 
 export function getMarks(): Record<string, MarkEntry> {
-    return settings.store.marks ?? {};
+    // 必须从 plain 读，不能从 settings.store 读：
+    // store 是 Proxy，从它身上展开对象会把每条记录也包成 Proxy，
+    // 而 Proxy 进不了 Electron IPC 的结构化克隆（DataCloneError），
+    // 主进程收不到变更 -> 设置文件不更新 -> 重启后只剩磁盘上原有的那一条。
+    try {
+        const raw = settings.plain?.marks;
+        if (!raw || typeof raw !== "object") return {};
+
+        // JSON 往返顺手把可能已经混进去的 Proxy 拍成纯对象
+        return JSON.parse(JSON.stringify(raw));
+    } catch (e) {
+        console.error("[UserMark] 读取标记数据失败", e);
+        return {};
+    }
 }
 
 export function getMark(userId: string): MarkEntry | undefined {
@@ -118,15 +131,22 @@ export function removeMark(userId: string): void {
  * 记录某个被标记用户的最新发言时间。
  * 只接受更晚的时间戳（翻旧消息不会把时间戳改回去），
  * 相同值直接跳过，避免「写盘 -> 重渲染 -> 再写盘」打转。
+ *
+ * 这里跑在 useEffect 里，一旦抛错会被消息装饰的 ErrorBoundary 吃掉，
+ * 所以单独兜一层，不让设置写入失败变成满屏渲染报错。
  */
 export function recordMessage(userId: string, timestampMs: number): void {
     if (!Number.isFinite(timestampMs)) return;
 
-    const marks = { ...getMarks() };
-    const entry = marks[userId];
-    if (!entry) return;
-    if (entry.lastMessageAt != null && timestampMs <= entry.lastMessageAt) return;
+    try {
+        const marks = getMarks();
+        const entry = marks[userId];
+        if (!entry) return;
+        if (entry.lastMessageAt != null && timestampMs <= entry.lastMessageAt) return;
 
-    marks[userId] = { ...entry, lastMessageAt: timestampMs };
-    settings.store.marks = marks;
+        marks[userId] = { ...entry, lastMessageAt: timestampMs };
+        settings.store.marks = marks;
+    } catch (e) {
+        console.error("[UserMark] 记录最新发言时间失败", e);
+    }
 }
