@@ -524,26 +524,34 @@
         }
 
         try {
-            const hits = [];
+            const candidates = [];
             metro.find(m => {
                 try {
                     const d = m && m.default;
-                    if (typeof d === "function" && hits.length < 10) {
+                    if (typeof d === "function" && candidates.length < 12) {
                         const s = String(d);
-                        for (const marker of ["EmojiRow", "MessageLongPress", "ActionSheetRow", "hideActionSheet", "FormRow"]) {
-                            if (s.includes(marker)) hits.push(`${marker}→${d.displayName || d.name || "匿名"}`);
-                        }
+                        if (s.includes("EmojiRow") || s.includes("MessageLongPress")) candidates.push(m);
                     }
                 } catch { /* 单个模块取不到就算了 */ }
                 return false;
             });
-            report.push(`源码命中=[${hits.join(", ") || "无"}]`);
+            report.push(`候选组件=${candidates.length}个`);
+
+            // 当场补：patchLazyComponent 首次渲染发现不是菜单会自动摘掉，不会留脏
+            let patched = 0;
+            for (const m of candidates) {
+                try {
+                    if (m && m.default && !patchedComponents.has(m.default)) patchLazyComponent(m);
+                    patched++;
+                } catch { /* 单个补不上就跳过 */ }
+            }
+            report.push(`已补丁=${patched}`);
         } catch (e) {
             report.push(`扫描失败=${e && e.message}`);
         }
 
         logger.warn("【诊断】" + report.join(" | "));
-        try { ui.toasts.showToast("诊断已写入日志"); } catch { }
+        return report;
     }
 
     /** 菜单进不来时的保底入口：一条输入框搞定标记 */
@@ -699,6 +707,7 @@
         // useProxy 的代理是响应式的，删除后需要强制重渲染
         const [, forceUpdate] = React.useReducer(x => x + 1, 0);
         React.useEffect(() => forceUpdate(), [ids.length]);
+        const [diag, setDiag] = React.useState(null);
 
         const children = [];
 
@@ -755,9 +764,14 @@
             React.createElement(Forms.FormRow, {
                 key: "mark-diag",
                 label: "跑一次菜单定位诊断",
-                subtext: "结果写进日志，发给白娅即可",
-                onPress: runDiag,
-            })
+                subtext: "结果直接列在下方，截给白娅即可（会顺带自动补一次丁）",
+                onPress: () => { try { setDiag(runDiag() || []); } catch (e) { logger.error("诊断失败", e); setDiag(["诊断异常：" + (e && e.message)]); } },
+            }),
+            ...(diag || []).map((line, i) => React.createElement(Forms.FormRow, {
+                key: "diag-" + i,
+                label: line,
+                disabled: true,
+            }))
         );
 
         return React.createElement(
