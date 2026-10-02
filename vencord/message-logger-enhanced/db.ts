@@ -178,8 +178,9 @@ export async function getMessagesByChannelAndAfterTimestampIDB(channel_id: strin
 }
 
 /**
- * 「标记用户发言」专用查询：按时间倒序/正序，只保留名单内作者、且不早于其标记时间的记录。
- * 不用 status 字段区分，所以已删除/已编辑的消息同样会出现在这个页签里。
+ * 「标记用户发言」专用查询：按时间倒序/正序，只保留名单内作者的记录。
+ * 不按状态区分（已删除/已编辑的也会出现），也**不按标记时间过滤** ——
+ * 否则「标记时用来标记的那条」永远进不了这个页签（它必然早于标记时刻）。
  */
 export async function getDateStortedMarkedIDB(newest: boolean, limit: number) {
     const marked = getMarkedMarks();
@@ -193,7 +194,7 @@ export async function getDateStortedMarkedIDB(newest: boolean, limit: number) {
 
     const messages: DBMessageRecord[] = [];
     for await (const c of cursor) {
-        if (isMarkedAndAfterMarkTime(c.value, marked)) {
+        if (isMarkedAuthor(c.value, marked)) {
             messages.push(c.value);
             if (messages.length >= limit) break;
         }
@@ -214,22 +215,17 @@ export async function countMarkedIDB() {
 
     let count = 0;
     for await (const c of cursor) {
-        if (isMarkedAndAfterMarkTime(c.value, marked)) count++;
+        if (isMarkedAuthor(c.value, marked)) count++;
     }
 
     return count;
 }
 
-function isMarkedAndAfterMarkTime(
+function isMarkedAuthor(
     record: DBMessageRecord,
     marked: Record<string, { markedAt: number; }>
 ): boolean {
-    const info = marked[record.message?.author?.id];
-    if (!info) return false;
-    if (!info.markedAt) return true;
-
-    const ts = Date.parse(record.message?.timestamp ?? "");
-    return !Number.isNaN(ts) && ts >= info.markedAt;
+    return Boolean(record.message?.author?.id) && record.message.author.id in marked;
 }
 
 export async function addMessageIDB(message: LoggedMessageJSON, status: DBMessageStatus) {

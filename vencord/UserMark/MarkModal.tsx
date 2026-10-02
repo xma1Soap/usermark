@@ -7,7 +7,7 @@
 import { Flex } from "@components/Flex";
 import { HeadingSecondary } from "@components/Heading";
 import { RenderModalProps } from "@vencord/discord-types";
-import { closeAllModals, Modal, openModal, showToast, TextArea, useState } from "@webpack/common";
+import { closeAllModals, Modal, openModal, TextArea, useState } from "@webpack/common";
 
 import { getMark, MarkSourceMessage, setMark } from "./settings";
 
@@ -65,17 +65,11 @@ function MarkDialog({ user, modalProps }: { user: MarkTarget; modalProps: Render
                     variant: "primary",
                     disabled: !trimmed,
                     onClick: () => {
-                        // 先关窗再弹 toast：中途任何一步抛错都不能把用户卡在窗里
+                        // 先关窗：中途任何一步抛错都不能把用户卡在窗里
                         try {
                             setMark(user.id, trimmed, name, user.sourceMessage);
                         } finally {
                             closeDialog(modalProps);
-                        }
-
-                        try {
-                            showToast(existing ? `已更新 ${name} 的备注` : `已标记 ${name}`);
-                        } catch {
-                            // 提示失败无所谓，数据已经落盘
                         }
                     }
                 }

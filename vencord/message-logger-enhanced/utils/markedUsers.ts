@@ -44,6 +44,8 @@ export interface MarkedInfo {
     username: string;
     /** 标记时那条消息的 id，日志里认出它 */
     sourceId?: string;
+    /** 那条消息所在频道，缺了就没法按 id 单独拉回来 */
+    sourceChannelId?: string;
     /** 那条消息的文本摘要 */
     sourceContent?: string;
 }
@@ -61,6 +63,7 @@ export function getMarkedMarks(): Record<string, MarkedInfo> {
                 note: typeof entry?.note === "string" ? entry.note : "",
                 username: typeof entry?.username === "string" ? entry.username : "",
                 sourceId: typeof entry?.sourceMessage?.id === "string" ? entry.sourceMessage.id : undefined,
+                sourceChannelId: typeof entry?.sourceMessage?.channelId === "string" ? entry.sourceMessage.channelId : undefined,
                 sourceContent: typeof entry?.sourceMessage?.content === "string" ? entry.sourceMessage.content : undefined,
             };
         }
