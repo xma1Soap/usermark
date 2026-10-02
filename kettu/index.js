@@ -126,12 +126,17 @@
        拿到组件返回的 JSX 后，遍历树找「一堆带 label+onPress 的行」，
        往里塞我们自己的项 —— 比按死层级路径耐版本变化。 */
 
+    /** 取“行属性”：React 元素看 props，纯配置对象看本体（新版面板两者都可能） */
+    function rowPropsOf(node) {
+        if (!node || typeof node !== "object" || Array.isArray(node)) return null;
+        return node.props && typeof node.props === "object" ? node.props : node;
+    }
+
     function isMenuRow(node) {
+        const p = rowPropsOf(node);
         return !!(
-            node && typeof node === "object" && !Array.isArray(node)
-            && node.props && typeof node.props.onPress === "function"
-            && (node.props.label != null || node.props.text != null
-                || node.props.title != null || node.props.children != null)
+            p && typeof p.onPress === "function"
+            && (p.label != null || p.text != null || p.title != null || p.children != null)
         );
     }
 
@@ -153,13 +158,46 @@
                 continue;
             }
 
-            if (typeof node === "object" && node.props) {
-                const p = node.props;
-                queue.push(p.children, p.rows, p.options, p.actions, p.items);
+            if (typeof node === "object") {
+                const p = rowPropsOf(node);
+                if (p) queue.push(p.children, p.rows, p.options, p.actions, p.items);
             }
         }
 
         return best;
+    }
+
+    /** 往行数组里塞我们的项：跟着现有行的形状走（React 元素还是纯对象） */
+    function pushMarkRows(rows, author, message) {
+        if (!rows || !author || !author.id) return false;
+        if (rows.some(r => { const p = rowPropsOf(r); return p && p.key === "usermark-mark"; })) return true;
+
+        const sample = rows.find(isMenuRow);
+        const sampleIsElement = !!(sample && sample.props);
+        const sampleProps = rowPropsOf(sample);
+        const labelKey = sampleProps && sampleProps.label != null ? "label"
+            : sampleProps && sampleProps.title != null ? "title" : "text";
+
+        const makeRow = (key, label, onPress) => {
+            if (sampleIsElement) return React.createElement(Forms.FormRow, { key, label, onPress });
+            const row = { key, onPress };
+            row[labelKey] = label;
+            return row;
+        };
+
+        const existing = getMark(author.id);
+        rows.push(makeRow("usermark-mark", existing ? "编辑标记备注" : "标记此用户", () => {
+            hideSheet();
+            askNote(author, message);
+        }));
+        if (existing) {
+            rows.push(makeRow("usermark-unmark", "取消标记", () => {
+                hideSheet();
+                removeMark(author.id);
+                ui.toasts.showToast("已取消标记");
+            }));
+        }
+        return true;
     }
 
     function patchMessageSheet() {
@@ -182,35 +220,7 @@
                         return;
                     }
 
-                    if (rows.some(r => isMenuRow(r) && r.props.key === "usermark-mark")) return;
-
-                    const existing = getMark(author.id);
-                    const sourceMessage = props.message;
-
-                    rows.push(
-                        React.createElement(Forms.FormRow, {
-                            key: "usermark-mark",
-                            label: existing ? "编辑标记备注" : "标记此用户",
-                            onPress: () => {
-                                hideSheet();
-                                askNote(author, sourceMessage);
-                            },
-                        })
-                    );
-
-                    if (existing) {
-                        rows.push(
-                            React.createElement(Forms.FormRow, {
-                                key: "usermark-unmark",
-                                label: "取消标记",
-                                onPress: () => {
-                                    hideSheet();
-                                    removeMark(author.id);
-                                    ui.toasts.showToast("已取消标记");
-                                },
-                            })
-                        );
-                    }
+                    pushMarkRows(rows, author, props.message);
                 } catch (e) {
                     logger.error("注入标记菜单失败", e);
                 }
@@ -231,22 +241,8 @@
 
         const rows = findMenuRows(res);
         if (!rows) return false;
-        if (rows.some(r => isMenuRow(r) && r.props.key === "usermark-mark")) return true;
 
-        const existing = getMark(author.id);
-        rows.push(React.createElement(Forms.FormRow, {
-            key: "usermark-mark",
-            label: existing ? "编辑标记备注" : "标记此用户",
-            onPress: () => { hideSheet(); askNote(author, message); },
-        }));
-        if (existing) {
-            rows.push(React.createElement(Forms.FormRow, {
-                key: "usermark-unmark",
-                label: "取消标记",
-                onPress: () => { hideSheet(); removeMark(author.id); ui.toasts.showToast("已取消标记"); },
-            }));
-        }
-        return true;
+        return pushMarkRows(rows, author, message);
     }
 
     function patchLazyComponent(mod) {
@@ -524,24 +520,54 @@
         }
 
         try {
+            // 不只看 default：具名导出也可能就是面板组件
             const candidates = [];
             metro.find(m => {
                 try {
-                    const d = m && m.default;
-                    if (typeof d === "function" && candidates.length < 12) {
+                    if (candidates.length >= 12 || !m || typeof m !== "object") return false;
+                    for (const k of Object.keys(m)) {
+                        const d = m[k];
+                        if (typeof d !== "function") continue;
                         const s = String(d);
-                        if (s.includes("EmojiRow") || s.includes("MessageLongPress")) candidates.push(m);
+                        if (s.includes("EmojiRow") || s.includes("MessageLongPress")) {
+                            candidates.push({ mod: m, key: k });
+                            break;
+                        }
                     }
                 } catch { /* 单个模块取不到就算了 */ }
                 return false;
             });
-            report.push(`候选组件=${candidates.length}个`);
+            report.push(`候选导出=${candidates.length}个`);
 
-            // 当场补：patchLazyComponent 首次渲染发现不是菜单会自动摘掉，不会留脏
             let patched = 0;
-            for (const m of candidates) {
+            for (const { mod, key } of candidates) {
                 try {
-                    if (m && m.default && !patchedComponents.has(m.default)) patchLazyComponent(m);
+                    const fn = mod[key];
+                    if (typeof fn !== "function" || patchedComponents.has(fn)) continue;
+
+                    const dn = fn.displayName || fn.name;
+                    patchedComponents.add(fn);
+                    const un = patcher.after(key, mod, (args, res) => {
+                        try {
+                            const props = args && args[0];
+                            injectMarkRow(props, res);
+                            // 只有明确不是消息面板才摘；面板里没找到行时要留着下次再试
+                            if (!props || !props.message) un();
+                        } catch (e) {
+                            logger.error("注入标记菜单失败", e);
+                        }
+                    });
+
+                    if (dn && mod[key] && mod[key].displayName !== dn) {
+                        try { mod[key].displayName = dn; } catch { /* 只读就作罢 */ }
+                    }
+                    try {
+                        for (const k2 of Object.getOwnPropertyNames(fn)) {
+                            if (k2 === "prototype" || k2 === "arguments" || k2 === "caller") continue;
+                            if (!(k2 in mod[key])) { try { mod[key][k2] = fn[k2]; } catch { /* 只读就跳过 */ } }
+                        }
+                    } catch { /* 拿不到属性名就算了 */ }
+
                     patched++;
                 } catch { /* 单个补不上就跳过 */ }
             }
