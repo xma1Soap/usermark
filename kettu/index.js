@@ -288,10 +288,9 @@
 
     function patchOpenLazy() {
         try {
-            // 默认关：这条路会碰 Discord 的懒加载机制，出过一次 Alert 崩溃。
-            // 确认 EmojiRow 那条路不行时，再到插件设置里手动打开它。
-            if (plugin.storage.enableLazyStrategy !== true) {
-                logger.log("策略二默认关闭（可在插件设置里打开）");
+            // 默认开；在设置里点一下可关（怀疑它引发崩溃时关掉）
+            if (plugin.storage.enableLazyStrategy === false) {
+                logger.log("策略二已被手动关闭");
                 return;
             }
             const mod = metro.findByProps("openLazy", "hideActionSheet");
@@ -661,7 +660,7 @@
             React.createElement(Forms.FormRow, {
                 key: "lazy-strategy",
                 label: "策略二：懒加载面板注入",
-                subtext: store.enableLazyStrategy ? "已打开。长按菜单走懒加载时用它" : "默认关。怀疑它引发崩溃时保持关闭",
+                subtext: store.enableLazyStrategy === false ? "已关闭。怀疑它引发崩溃时点这里" : "已打开。长按菜单走懒加载时靠它注入",
                 onPress: () => {
                     plugin.storage.enableLazyStrategy = !plugin.storage.enableLazyStrategy;
                     forceUpdate();
