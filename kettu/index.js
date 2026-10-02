@@ -211,7 +211,9 @@
         unpatches.push(
             patcher.after("default", sheetModule, ([props], res) => {
                 try {
-                    const author = props && props.message && props.message.author;
+                    const message = extractMessage(props);
+                    const author = message && message.author;
+                    recordCapture("EmojiRow.default", props, res);
                     if (!author || !author.id) return;
 
                     const rows = findMenuRows(res);
@@ -220,7 +222,7 @@
                         return;
                     }
 
-                    pushMarkRows(rows, author, props.message);
+                    pushMarkRows(rows, author, message);
                 } catch (e) {
                     logger.error("注入标记菜单失败", e);
                 }
@@ -235,7 +237,7 @@
     const patchedComponents = new WeakSet();
 
     function injectMarkRow(props, res) {
-        const message = props && props.message;
+        const message = extractMessage(props);
         const author = message && message.author;
         if (!author || !author.id) return false;
 
@@ -550,9 +552,10 @@
                     const un = patcher.after(key, mod, (args, res) => {
                         try {
                             const props = args && args[0];
+                            recordCapture(key, props, res);
                             injectMarkRow(props, res);
                             // 只有明确不是消息面板才摘；面板里没找到行时要留着下次再试
-                            if (!props || !props.message) un();
+                            if (!extractMessage(props)) un();
                         } catch (e) {
                             logger.error("注入标记菜单失败", e);
                         }
@@ -578,6 +581,37 @@
 
         logger.warn("【诊断】" + report.join(" | "));
         return report;
+    }
+
+    /** 从面板 props 里挖消息：这版可能叫 message / messages[0] / msg 等 */
+    function extractMessage(props) {
+        if (!props || typeof props !== "object") return null;
+        const m = props.message || props.msg || props.targetMessage
+            || (Array.isArray(props.messages) && props.messages[0])
+            || (props.data && props.data.message);
+        return m || null;
+    }
+
+    /** 每个被补丁的组件渲染时，把看到的 props 记下来，给设置页展示 */
+    const diagCapture = { last: null, count: 0 };
+
+    function recordCapture(key, props, res) {
+        try {
+            const rows = findMenuRows(res);
+            const propKeys = Object.keys(props || {}).slice(0, 14);
+            diagCapture.last = {
+                key,
+                propKeys,
+                hasMessage: !!extractMessage(props),
+                rows: rows ? rows.length : 0,
+            };
+            diagCapture.count++;
+            if (diagCapture.count <= 12) {
+                logger.warn(`【命中】${key} props=[${propKeys.join(",")}] message=${diagCapture.last.hasMessage ? "有" : "无"} 行=${diagCapture.last.rows}`);
+            }
+        } catch (e) {
+            logger.warn("记录命中失败", e);
+        }
     }
 
     /** 菜单进不来时的保底入口：一条输入框搞定标记 */
@@ -797,7 +831,20 @@
                 key: "diag-" + i,
                 label: line,
                 disabled: true,
-            }))
+            })),
+            ...(diagCapture.last ? [
+                React.createElement(Forms.FormRow, {
+                    key: "cap-0",
+                    label: `最近命中：${diagCapture.last.key}`,
+                    disabled: true,
+                }),
+                React.createElement(Forms.FormRow, {
+                    key: "cap-1",
+                    label: `props=[${diagCapture.last.propKeys.join(",") || "空"}]`,
+                    subtext: `message=${diagCapture.last.hasMessage ? "有" : "无"} · 找到行=${diagCapture.last.rows} · 累计渲染=${diagCapture.count}`,
+                    disabled: true,
+                }),
+            ] : [])
         );
 
         return React.createElement(
