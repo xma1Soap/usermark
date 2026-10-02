@@ -487,6 +487,30 @@
         logger.warn("没找到 FluxDispatcher，消息日志不可用");
     }
 
+    /** 菜单进不来时的保底入口：一条输入框搞定标记 */
+    function askMarkById() {
+        ui.alerts.showInputAlert({
+            title: "按 ID 标记",
+            placeholder: "例如：123456789012345678 备注内容",
+            initialValue: "",
+            confirmText: "标记",
+            cancelText: "取消",
+            onConfirm: text => {
+                try {
+                    const raw = String(text || "").trim();
+                    const [id, ...rest] = raw.split(/\s+/);
+                    if (!/^\d{5,}$/.test(id || "")) {
+                        ui.toasts.showToast("开头那串得是数字用户 ID");
+                        return;
+                    }
+                    setMark(id, rest.join(" "), id, undefined);
+                } catch (e) {
+                    logger.error("按 ID 标记失败", e);
+                }
+            },
+        });
+    }
+
     function deleteLog(id) {
         try {
             writeLogs(readLogs().filter(r => r && r.id !== id));
@@ -654,28 +678,27 @@
             ...children
         );
 
-        const optionsSection = React.createElement(
-            Forms.FormSection,
-            { title: "插件选项" },
-            React.createElement(Forms.FormRow, {
-                key: "lazy-strategy",
-                label: "策略二：懒加载面板注入",
-                subtext: store.enableLazyStrategy === false ? "已关闭。怀疑它引发崩溃时点这里" : "已打开。长按菜单走懒加载时靠它注入",
-                onPress: () => {
-                    plugin.storage.enableLazyStrategy = !plugin.storage.enableLazyStrategy;
-                    forceUpdate();
-                },
-            })
-        );
+        const optionsSection = null;
 
         const logs = readLogs();
         const markedIds = new Set(ids);
         const markedLogs = logs.filter(r => r && r.message && r.message.author && markedIds.has(r.message.author.id));
 
+        const idSection = React.createElement(
+            Forms.FormSection,
+            { title: "手动标记" },
+            React.createElement(Forms.FormRow, {
+                key: "mark-by-id",
+                label: "按 ID 标记一个用户",
+                subtext: "长按菜单进不来时用这个：输入 用户ID 备注",
+                onPress: askMarkById,
+            })
+        );
+
         return React.createElement(
             React.Fragment,
             null,
-            optionsSection,
+            idSection,
             markedSection,
             React.createElement(
                 Forms.FormSection,
@@ -712,11 +735,8 @@
             } catch (e) {
                 logger.error("挂载长按菜单失败", e);
             }
-            try {
-                patchOpenLazy();
-            } catch (e) {
-                logger.warn("挂载策略二失败", e);
-            }
+            // 策略二已停用：挂 openLazy 会让 Kettu 的 byDisplayName 整条链坏掉，
+            // 表现为 FluxContainer(Alert) 解析不到、渲染弹窗就崩。实测过，不再挂。
             try {
                 startLogger();
             } catch (e) {
