@@ -439,6 +439,24 @@
         }
     }
 
+    /** 只记名单里的人。全量记录 = 每条消息整表读写 MMKV，滑动必卡 */
+    function isMarkedAuthor(author) {
+        try {
+            const marks = plugin.storage.marks;
+            return !!(author && author.id && marks && typeof marks === "object" && author.id in marks);
+        } catch {
+            return false;
+        }
+    }
+
+    function hasLog(id) {
+        try {
+            return readLogs().some(x => x && String(x.id) === String(id));
+        } catch {
+            return false;
+        }
+    }
+
     function onDispatch(args) {
         try {
             const action = args && args[0];
@@ -447,19 +465,22 @@
             switch (action.type) {
                 case "MESSAGE_CREATE": {
                     const m = action.message;
-                    if (m && m.id) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId, guild_id: m.guild_id || action.guildId });
+                    if (m && m.id && isMarkedAuthor(m.author)) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId, guild_id: m.guild_id || action.guildId });
                     break;
                 }
                 case "MESSAGE_UPDATE": {
                     const m = action.message;
-                    if (m && m.id) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId });
+                    if (m && m.id && isMarkedAuthor(m.author)) upsertLog(S.NORMAL, { ...m, channel_id: m.channel_id || action.channelId });
                     break;
                 }
-                case "MESSAGE_DELETE":
-                    markDeleted([action.id || (action.message && action.message.id)]);
+                case "MESSAGE_DELETE": {
+                    const id = action.id || (action.message && action.message.id);
+                    if (id && hasLog(id)) markDeleted([id]);
                     break;
+                }
                 case "MESSAGE_DELETE_BULK":
-                    markDeleted(action.ids);
+                    // 只改已有记录，不为不相干的 id 新建空壳（那会白白写盘）
+                    (action.ids || []).filter(hasLog).forEach(id => markDeleted([id]));
                     break;
             }
         } catch (e) {
@@ -745,23 +766,18 @@
             markedSection,
             React.createElement(
                 Forms.FormSection,
-                { title: `标记用户发言（${markedLogs.length}）` },
-                ...renderLogRows(markedLogs.slice(0, 30), forceUpdate)
-            ),
-            React.createElement(
-                Forms.FormSection,
-                { title: `消息日志（${logs.length}/${getLogLimit()}）` },
-                ...renderLogRows(logs.slice(0, 30), forceUpdate),
+                { title: `标记用户发言（${markedLogs.length}/${getLogLimit()}）` },
+                ...renderLogRows(markedLogs.slice(0, 30), forceUpdate),
                 React.createElement(Forms.FormRow, {
                     key: "log-limit",
-                    label: `日志上限：${getLogLimit()} 条`,
-                    subtext: "超过就丢最旧的",
+                    label: `记录上限：${getLogLimit()} 条`,
+                    subtext: "只存名单内用户的发言",
                     onPress: askLogLimit,
                 }),
                 React.createElement(Forms.FormRow, {
                     key: "log-clear",
-                    label: "清空日志",
-                    subtext: "删掉所有已记录消息",
+                    label: "清空记录",
+                    subtext: "删掉已存的发言记录",
                     destructive: true,
                     onPress: () => { writeLogs([]); forceUpdate(); },
                 })
