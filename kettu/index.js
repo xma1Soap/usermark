@@ -253,15 +253,24 @@
         try {
             const target = mod && mod.default;
             if (!target || typeof target !== "function" || patchedComponents.has(target)) return;
+
+            // Kettu 靠 displayName 反查组件（byDisplayName），包装后可能把它顶掉，先留着
+            const displayName = target.displayName || target.name;
             patchedComponents.add(target);
 
-            unpatches.push(patcher.after("default", mod, (args, res) => {
+            const unpatch = patcher.after("default", mod, (args, res) => {
                 try {
-                    injectMarkRow(args && args[0], res);
+                    const injected = injectMarkRow(args && args[0], res);
+                    // 一眼看出不是菜单面板：立刻把补丁摘掉，恢复原样
+                    if (!injected && unpatch) unpatch();
                 } catch (e) {
                     logger.error("注入标记菜单失败", e);
                 }
-            }));
+            });
+
+            if (displayName && mod.default && mod.default.displayName !== displayName) {
+                try { mod.default.displayName = displayName; } catch { /* 只读就作罢 */ }
+            }
             logger.log("已补丁懒加载的长按面板");
         } catch (e) {
             logger.warn("补丁懒加载组件失败", e);
@@ -279,10 +288,15 @@
             unpatches.push(patcher.before("openLazy", mod, (args) => {
                 try {
                     const key = args && args[1];
-                    if (typeof key === "string" && !/message|long|sheet|action|jump/i.test(key)) return;
+                    // 只管消息相关的面板。Alert 等一概不碰：
+                    // 打过补丁的组件 displayName 会变，Discord 渲染弹窗时 byDisplayName 解析不到就崩
+                    if (typeof key !== "string" || !/message|longpress/i.test(key)) return;
 
                     const lazy = args && args[0];
-                    if (lazy && typeof lazy.then === "function") lazy.then(patchLazyComponent, () => { });
+                    // 只接原生 Promise，Kettu 自家的 thenable 不能随便唤
+                    if (!lazy || typeof lazy.then !== "function" || !(lazy instanceof Promise)) return;
+
+                    lazy.then(patchLazyComponent, () => { });
                 } catch (e) {
                     logger.warn("openLazy 观察失败", e);
                 }
