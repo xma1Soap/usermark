@@ -271,6 +271,15 @@
             if (displayName && mod.default && mod.default.displayName !== displayName) {
                 try { mod.default.displayName = displayName; } catch { /* 只读就作罢 */ }
             }
+            // 把原组件的静态成员整体搬过去，别只搬 displayName
+            try {
+                for (const key of Object.getOwnPropertyNames(target)) {
+                    if (key === "prototype" || key === "arguments" || key === "caller") continue;
+                    if (!(key in mod.default)) {
+                        try { mod.default[key] = target[key]; } catch { /* 只读就跳过 */ }
+                    }
+                }
+            } catch { /* 拿不到属性名就算了 */ }
             logger.log("已补丁懒加载的长按面板");
         } catch (e) {
             logger.warn("补丁懒加载组件失败", e);
@@ -279,6 +288,12 @@
 
     function patchOpenLazy() {
         try {
+            // 默认关：这条路会碰 Discord 的懒加载机制，出过一次 Alert 崩溃。
+            // 确认 EmojiRow 那条路不行时，再到插件设置里手动打开它。
+            if (plugin.storage.enableLazyStrategy !== true) {
+                logger.log("策略二默认关闭（可在插件设置里打开）");
+                return;
+            }
             const mod = metro.findByProps("openLazy", "hideActionSheet");
             if (!mod || typeof mod.openLazy !== "function") {
                 logger.warn("openLazy 模块没找到，策略二不可用");
@@ -640,6 +655,20 @@
             ...children
         );
 
+        const optionsSection = React.createElement(
+            Forms.FormSection,
+            { title: "插件选项" },
+            React.createElement(Forms.FormRow, {
+                key: "lazy-strategy",
+                label: "策略二：懒加载面板注入",
+                subtext: store.enableLazyStrategy ? "已打开。长按菜单走懒加载时用它" : "默认关。怀疑它引发崩溃时保持关闭",
+                onPress: () => {
+                    plugin.storage.enableLazyStrategy = !plugin.storage.enableLazyStrategy;
+                    forceUpdate();
+                },
+            })
+        );
+
         const logs = readLogs();
         const markedIds = new Set(ids);
         const markedLogs = logs.filter(r => r && r.message && r.message.author && markedIds.has(r.message.author.id));
@@ -647,6 +676,7 @@
         return React.createElement(
             React.Fragment,
             null,
+            optionsSection,
             markedSection,
             React.createElement(
                 Forms.FormSection,
