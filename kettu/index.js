@@ -200,42 +200,10 @@
         return true;
     }
 
-    function patchMessageSheet() {
-        const sheetModule = metro.findByProps("EmojiRow");
-
-        if (!sheetModule || typeof sheetModule.default !== "function") {
-            logger.warn("没找到消息长按菜单组件（EmojiRow），标记入口不可用");
-            return;
-        }
-
-        unpatches.push(
-            patcher.after("default", sheetModule, ([props], res) => {
-                try {
-                    const message = extractMessage(props);
-                    const author = message && message.author;
-                    recordCapture("EmojiRow.default", props, res);
-                    if (!author || !author.id) return;
-
-                    const rows = findMenuRows(res);
-                    if (!rows) {
-                        logger.warn("长按菜单里没定位到按钮数组");
-                        return;
-                    }
-
-                    pushMarkRows(rows, author, message);
-                } catch (e) {
-                    logger.error("注入标记菜单失败", e);
-                }
-            })
-        );
-    }
-
-    /* ============ 策略二：openLazy 懒加载的面板 ============
-       有些版本消息长按面板是 openLazy 拉起来的，EmojiRow 那条路挂不上。
-       这里盯住 openLazy，组件一解析完就补一次丁。 */
-
+    /** 已打过补丁的组件，避免重复包装 */
     const patchedComponents = new WeakSet();
 
+    /** 往长按面板里注入我们的行 */
     function injectMarkRow(props, res) {
         const message = extractMessage(props);
         const author = message && message.author;
@@ -247,75 +215,93 @@
         return pushMarkRows(rows, author, message);
     }
 
-    function patchLazyComponent(mod) {
+    /**
+     * 从一个模块里挑出值得补丁的导出。
+     * 顺序很重要：`default` 放最前 —— 消息面板的「容器」是 default，
+     * 而 EmojiRow / ActionSheetRow 只是它旁边的叶组件。
+     * 之前只补第一个命中的导出，一上来就补到叶子上，当然找不到行。
+     */
+    function candidateKeys(mod) {
+        const keys = [];
+        const markers = ["EmojiRow", "MessageLongPress", "ActionSheetRow"];
+
         try {
-            const target = mod && mod.default;
-            if (!target || typeof target !== "function" || patchedComponents.has(target)) return;
+            const d = mod && mod.default;
+            if (typeof d === "function") keys.push("default");
 
-            // Kettu 靠 displayName 反查组件（byDisplayName），包装后可能把它顶掉，先留着
-            const displayName = target.displayName || target.name;
-            patchedComponents.add(target);
-
-            const unpatch = patcher.after("default", mod, (args, res) => {
+            for (const k of Object.keys(mod || {})) {
+                if (k === "default" || keys.includes(k)) continue;
+                const fn = mod[k];
+                if (typeof fn !== "function") continue;
                 try {
-                    const injected = injectMarkRow(args && args[0], res);
-                    // 一眼看出不是菜单面板：立刻把补丁摘掉，恢复原样
-                    if (!injected && unpatch) unpatch();
+                    const s = String(fn);
+                    if (markers.some(m => s.includes(m))) keys.push(k);
+                } catch { /* 取不到源码就跳过 */ }
+            }
+        } catch { /* 模块异常就返回已有的 */ }
+
+        return keys;
+    }
+
+    /** 给某个导出打补丁。返回是否真补上了 */
+    function patchExport(mod, key, label) {
+        try {
+            const fn = mod && mod[key];
+            if (typeof fn !== "function" || patchedComponents.has(fn)) return false;
+
+            const dn = fn.displayName || fn.name;
+            patchedComponents.add(fn);
+
+            const un = patcher.after(key, mod, (args, res) => {
+                const props = args && args[0];
+                try {
+                    recordCapture(label || key, props, res);
+                    injectMarkRow(props, res);
                 } catch (e) {
                     logger.error("注入标记菜单失败", e);
                 }
+                // 明确不是消息面板（连消息都没有）就摘掉，不留脏
+                if (!extractMessage(props)) un();
             });
 
-            if (displayName && mod.default && mod.default.displayName !== displayName) {
-                try { mod.default.displayName = displayName; } catch { /* 只读就作罢 */ }
+            if (dn && mod[key] && mod[key].displayName !== dn) {
+                try { mod[key].displayName = dn; } catch { /* 只读就作罢 */ }
             }
-            // 把原组件的静态成员整体搬过去，别只搬 displayName
             try {
-                for (const key of Object.getOwnPropertyNames(target)) {
-                    if (key === "prototype" || key === "arguments" || key === "caller") continue;
-                    if (!(key in mod.default)) {
-                        try { mod.default[key] = target[key]; } catch { /* 只读就跳过 */ }
-                    }
+                for (const k2 of Object.getOwnPropertyNames(fn)) {
+                    if (k2 === "prototype" || k2 === "arguments" || k2 === "caller") continue;
+                    if (!(k2 in mod[key])) { try { mod[key][k2] = fn[k2]; } catch { /* 只读就跳过 */ } }
                 }
             } catch { /* 拿不到属性名就算了 */ }
-            logger.log("已补丁懒加载的长按面板");
-        } catch (e) {
-            logger.warn("补丁懒加载组件失败", e);
+
+            return true;
+        } catch {
+            return false;
         }
     }
 
-    function patchOpenLazy() {
-        try {
-            // 默认开；在设置里点一下可关（怀疑它引发崩溃时关掉）
-            if (plugin.storage.enableLazyStrategy === false) {
-                logger.log("策略二已被手动关闭");
-                return;
-            }
-            const mod = metro.findByProps("openLazy", "hideActionSheet");
-            if (!mod || typeof mod.openLazy !== "function") {
-                logger.warn("openLazy 模块没找到，策略二不可用");
-                return;
-            }
+    /** 把模块里所有候选导出全补上（不是只补第一个） */
+    function patchModuleAll(mod) {
+        let n = 0;
+        for (const key of candidateKeys(mod)) {
+            if (patchExport(mod, key, key)) n++;
+        }
+        return n;
+    }
 
-            unpatches.push(patcher.before("openLazy", mod, (args) => {
-                try {
-                    const key = args && args[1];
-                    // 只管消息相关的面板。Alert 等一概不碰：
-                    // 打过补丁的组件 displayName 会变，Discord 渲染弹窗时 byDisplayName 解析不到就崩
-                    if (typeof key !== "string" || !/message|longpress/i.test(key)) return;
+    function patchMessageSheet() {
+        const sheetModule = metro.findByProps("EmojiRow");
 
-                    const lazy = args && args[0];
-                    // 只接原生 Promise，Kettu 自家的 thenable 不能随便唤
-                    if (!lazy || typeof lazy.then !== "function" || !(lazy instanceof Promise)) return;
+        if (!sheetModule) {
+            logger.warn("没找到消息长按菜单组件（EmojiRow），标记入口不可用");
+            return;
+        }
 
-                    lazy.then(patchLazyComponent, () => { });
-                } catch (e) {
-                    logger.warn("openLazy 观察失败", e);
-                }
-            }));
-            logger.log("策略二已挂：openLazy");
-        } catch (e) {
-            logger.warn("openLazy 挂载失败", e);
+        const patched = patchModuleAll(sheetModule);
+        if (patched === 0) {
+            logger.warn("EmojiRow 模块里没有可补的导出");
+        } else {
+            logger.log(`长按菜单已补丁 ${patched} 个导出`);
         }
     }
 
@@ -541,37 +527,9 @@
             });
             report.push(`候选导出=${candidates.length}个`);
 
-            let patched = 0;
             for (const { mod, key } of candidates) {
                 try {
-                    const fn = mod[key];
-                    if (typeof fn !== "function" || patchedComponents.has(fn)) continue;
-
-                    const dn = fn.displayName || fn.name;
-                    patchedComponents.add(fn);
-                    const un = patcher.after(key, mod, (args, res) => {
-                        try {
-                            const props = args && args[0];
-                            recordCapture(key, props, res);
-                            injectMarkRow(props, res);
-                            // 只有明确不是消息面板才摘；面板里没找到行时要留着下次再试
-                            if (!extractMessage(props)) un();
-                        } catch (e) {
-                            logger.error("注入标记菜单失败", e);
-                        }
-                    });
-
-                    if (dn && mod[key] && mod[key].displayName !== dn) {
-                        try { mod[key].displayName = dn; } catch { /* 只读就作罢 */ }
-                    }
-                    try {
-                        for (const k2 of Object.getOwnPropertyNames(fn)) {
-                            if (k2 === "prototype" || k2 === "arguments" || k2 === "caller") continue;
-                            if (!(k2 in mod[key])) { try { mod[key][k2] = fn[k2]; } catch { /* 只读就跳过 */ } }
-                        }
-                    } catch { /* 拿不到属性名就算了 */ }
-
-                    patched++;
+                    if (patchExport(mod, key, key)) patched++;
                 } catch { /* 单个补不上就跳过 */ }
             }
             report.push(`已补丁=${patched}`);
@@ -593,7 +551,7 @@
     }
 
     /** 每个被补丁的组件渲染时，把看到的 props 记下来，给设置页展示 */
-    const diagCapture = { last: null, count: 0 };
+    const diagCapture = { last: null, count: 0, log: [] };
 
     function recordCapture(key, props, res) {
         try {
@@ -607,7 +565,9 @@
             };
             diagCapture.count++;
             if (diagCapture.count <= 12) {
-                logger.warn(`【命中】${key} props=[${propKeys.join(",")}] message=${diagCapture.last.hasMessage ? "有" : "无"} 行=${diagCapture.last.rows}`);
+                diagCapture.log.unshift(`【命中】${key} props=[${propKeys.join(",")}] message=${diagCapture.last.hasMessage ? "有" : "无"} 行=${diagCapture.last.rows}`);
+                diagCapture.log.length = Math.min(diagCapture.log.length, 8);
+                logger.warn(diagCapture.log[0]);
             }
         } catch (e) {
             logger.warn("记录命中失败", e);
@@ -844,7 +804,12 @@
                     subtext: `message=${diagCapture.last.hasMessage ? "有" : "无"} · 找到行=${diagCapture.last.rows} · 累计渲染=${diagCapture.count}`,
                     disabled: true,
                 }),
-            ] : [])
+            ] : []),
+            ...diagCapture.log.map((line, i) => React.createElement(Forms.FormRow, {
+                key: "caplog-" + i,
+                label: line,
+                disabled: true,
+            }))
         );
 
         return React.createElement(
