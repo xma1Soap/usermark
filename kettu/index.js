@@ -200,12 +200,40 @@
         return true;
     }
 
+    /** 看着像一条 Discord 消息 */
+    function looksLikeMessage(v) {
+        return !!v && typeof v === "object" && (typeof v.id === "string" || typeof v.id === "number")
+            && (v.author || v.channel_id);
+    }
+
+    /**
+     * 从面板 props 里挖消息：
+     * 先看常见属性名，再浅层掃一遍 —— 面板可能把消息藏在 route/params/嵌套对象里。
+     */
+    function findMessageInProps(props, depth) {
+        if (!props || typeof props !== "object" || (depth || 0) > 3) return null;
+
+        const direct = extractMessage(props);
+        if (direct) return direct;
+
+        for (const k of Object.keys(props)) {
+            let v;
+            try { v = props[k]; } catch { continue; }
+            if (looksLikeMessage(v)) return v;
+            if (v && typeof v === "object" && !Array.isArray(v) && (depth || 0) < 2) {
+                const found = findMessageInProps(v, (depth || 0) + 1);
+                if (found) return found;
+            }
+        }
+        return null;
+    }
+
     /** 已打过补丁的组件，避免重复包装 */
     const patchedComponents = new WeakSet();
 
     /** 往长按面板里注入我们的行 */
     function injectMarkRow(props, res) {
-        const message = extractMessage(props);
+        const message = findMessageInProps(props);
         const author = message && message.author;
         if (!author || !author.id) return false;
 
@@ -260,9 +288,8 @@
                 } catch (e) {
                     logger.error("注入标记菜单失败", e);
                 }
-                // 明确不是消息面板（连消息都没有）就摘掉，不留脏
-                if (!extractMessage(props)) un();
             });
+            void un;
 
             if (dn && mod[key] && mod[key].displayName !== dn) {
                 try { mod[key].displayName = dn; } catch { /* 只读就作罢 */ }
@@ -287,6 +314,45 @@
             if (patchExport(mod, key, key)) n++;
         }
         return n;
+    }
+
+    const MARKERS = ["EmojiRow", "MessageLongPress", "ActionSheetRow"];
+
+    /**
+     * 全量扫描：把每个模块里“源码提到面板特征”的导出全部补上。
+     * 不只看 findByProps("EmojiRow") 那一个模块 —— 真正的容器可能在另一个模块里。
+     */
+    function patchAllCandidates() {
+        const candidates = [];
+
+        try {
+            metro.find(m => {
+                try {
+                    if (candidates.length >= 40 || !m || typeof m !== "object") return false;
+                    for (const k of Object.keys(m)) {
+                        const d = m[k];
+                        if (typeof d !== "function") continue;
+                        let s;
+                        try { s = String(d); } catch { continue; }
+                        if (MARKERS.some(x => s.includes(x))) {
+                            candidates.push({ mod: m, key: k });
+                            break;
+                        }
+                    }
+                } catch { /* 单个模块跳过 */ }
+                return false;
+            });
+        } catch { /* 扫描不可用 */ }
+
+        let n = 0;
+        for (const { mod, key } of candidates) {
+            try {
+                if (patchExport(mod, key, key)) n++;
+            } catch { /* 单个跳过 */ }
+        }
+
+        logger.log(`全量扫描：命中 ${candidates.length} 个候选，补上 ${n} 个`);
+        return { found: candidates.length, patched: n };
     }
 
     function patchMessageSheet() {
@@ -508,31 +574,9 @@
         }
 
         try {
-            // 不只看 default：具名导出也可能就是面板组件
-            const candidates = [];
-            metro.find(m => {
-                try {
-                    if (candidates.length >= 12 || !m || typeof m !== "object") return false;
-                    for (const k of Object.keys(m)) {
-                        const d = m[k];
-                        if (typeof d !== "function") continue;
-                        const s = String(d);
-                        if (s.includes("EmojiRow") || s.includes("MessageLongPress")) {
-                            candidates.push({ mod: m, key: k });
-                            break;
-                        }
-                    }
-                } catch { /* 单个模块取不到就算了 */ }
-                return false;
-            });
-            report.push(`候选导出=${candidates.length}个`);
-
-            for (const { mod, key } of candidates) {
-                try {
-                    if (patchExport(mod, key, key)) patched++;
-                } catch { /* 单个补不上就跳过 */ }
-            }
-            report.push(`已补丁=${patched}`);
+            const result = patchAllCandidates();
+            report.push(`全量候选=${result.found}个`);
+            report.push(`已补丁=${result.patched}`);
         } catch (e) {
             report.push(`扫描失败=${e && e.message}`);
         }
@@ -846,6 +890,11 @@
                 patchMessageSheet();
             } catch (e) {
                 logger.error("挂载长按菜单失败", e);
+            }
+            try {
+                patchAllCandidates();
+            } catch (e) {
+                logger.warn("全量补丁失败", e);
             }
             // 策略二已停用：挂 openLazy 会让 Kettu 的 byDisplayName 整条链坏掉，
             // 表现为 FluxContainer(Alert) 解析不到、渲染弹窗就崩。实测过，不再挂。
