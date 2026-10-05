@@ -1,11 +1,11 @@
 {
   "name": "UserMark",
-  "description": "长按消息给盯的人挂自定义备注，设置页里管理名单。",
+  "description": "长按消息标记要盯的人，备注和名单全在设置页里就地改，不弹窗。",
   "authors": [
     {
       "name": "星薄荷"
     }
   ],
   "main": "index.js",
-  "hash": "80f263339f7707622fe534b7311cc14fe23c092c95cac9f1b2d69da09e6ad398"
+  "hash": "c7a862b2f589a50c949864a5fdbf60900795c20a6ab7670ba690992deacf8175"
 }

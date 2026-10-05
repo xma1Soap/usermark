@@ -86,36 +86,98 @@
         writeMarks(marks);
     }
 
-    /* ================= 弹窗与提示 ================= */
+    /* ================= 输入与提示 =================
+       这版插件**不用任何弹窗**。Kettu 的 `ui.alerts.showInputAlert` 渲染的是 Discord
+       老 Alert（`src/metro/common/components.ts:18` = findByDisplayNameLazy("FluxContainer(Alert)")），
+       现网 Discord 已经没有那个组件了，所以一进输入弹窗就在 forceLoad 抛
+       「FluxContainer(Alert) is undefined」，整块被 ErrorBoundary 吃掉。
+       要写字儿就全在设置页里就地展开一个输入框，只用已经解析到的 Forms / React Native。 */
+
+    const ReactNative = metro.common.ReactNative;
+
+    let sheetActionsMod; // undefined = 还没查过，null = 查过但没有
+    function getSheetActions() {
+        if (sheetActionsMod === undefined) {
+            try {
+                sheetActionsMod = metro.findByProps("openLazy", "hideActionSheet") || null;
+            } catch {
+                sheetActionsMod = null;
+            }
+        }
+        return sheetActionsMod;
+    }
 
     function hideSheet() {
         try {
-            const sheet = metro.findByProps("openLazy", "hideActionSheet");
+            const sheet = getSheetActions();
             sheet && sheet.hideActionSheet && sheet.hideActionSheet();
-        } catch (e) {
-            // 关不掉就算了
-        }
+        } catch { /* 关不掉就算了 */ }
     }
 
-    function askNote(author, message) {
+    /** 长按里的「标记」：先立刻落盘（备注可空），再把待写备注的人挂到设置页 */
+    function markAndQueueNote(author, message) {
         const existing = getMark(author.id);
-        const name = author.globalName || author.username || author.id;
+        const name = author.globalName || author.global_name || author.username || author.id;
 
-        ui.alerts.showInputAlert({
-            title: existing ? `编辑标记 · ${name}` : `标记 · ${name}`,
-            placeholder: "写点备注，可以留空",
-            initialValue: existing ? existing.note : "",
-            confirmText: existing ? "保存" : "标记",
-            cancelText: "取消",
-            onConfirm: text => {
-                // 保存失败也绝不能把弹窗卡住：先存，存不动就吞掉异常，弹窗自己会关
-                try {
-                    setMark(author.id, text, name, sourceFromMessage(message));
-                } catch (e) {
-                    logger.error("标记失败", e);
-                }
-                // 不弹 toast：桌面端这个提示会渲染成一个空白圆圈，
-                // 标记结果本身已经看得见（菜单里变成取消标记、名单里多一行）
+        try {
+            if (!existing) setMark(author.id, "", name, sourceFromMessage(message));
+            plugin.storage.pending = JSON.parse(JSON.stringify({
+                userId: String(author.id),
+                username: name,
+            }));
+        } catch (e) {
+            logger.error("标记失败", e);
+        }
+
+        ui.toasts.showToast(`已标记 ${name}：去 UserMark 设置页写备注`);
+    }
+
+    /** 一个不自带样式的输入框：优先用 Discord 的 Forms.FormInput，没有就退回 RN TextInput */
+    function makeInput({ key: rowKey, value, onChange, placeholder }) {
+        let FormInput = null;
+        try {
+            FormInput = Forms && Forms.FormInput;
+        } catch (e) {
+            logger.warn("拿 Forms.FormInput 失败，改用 RN 输入框", e);
+            FormInput = null;
+        }
+        if (FormInput) {
+            return React.createElement(FormInput, {
+                key: rowKey,
+                placeholder,
+                value,
+                onChange: v => onChange(typeof v === "string" ? v : ((v && v.text) || "")),
+                autoFocus: true,
+                showBorder: true,
+                style: { alignSelf: "stretch" },
+            });
+        }
+
+        let Input = null;
+        try {
+            Input = ReactNative && ReactNative.TextInput;
+        } catch (e) {
+            // metro.common.ReactNative 是懒代理，取属性会触发 forceLoad：
+            // 万一它被拉黑，宁可显示「找不到输入框」那一行，也别把整页抛进 ErrorBoundary
+            logger.warn("拿 RN 的 TextInput 失败", e);
+            Input = null;
+        }
+        if (!Input) return null;
+
+        return React.createElement(Input, {
+            key: rowKey,
+            placeholder,
+            value,
+            onChangeText: onChange,
+            autoFocus: true,
+            style: {
+                alignSelf: "stretch",
+                marginHorizontal: 12,
+                padding: 12,
+                borderWidth: 1,
+                borderColor: "rgba(130, 130, 140, 0.6)",
+                borderRadius: 8,
+                fontSize: 16,
             },
         });
     }
@@ -247,7 +309,7 @@
 
         rows.push(makeRow("usermark-mark", existing ? "编辑标记备注" : "标记此用户", () => {
             hideSheet();
-            askNote(author, message);
+            markAndQueueNote(author, message);
         }));
         if (existing) {
             rows.push(makeRow("usermark-unmark", "取消标记", () => {
@@ -263,7 +325,7 @@
 
     /** 挂 openLazy 钩子：只有消息长按面板那个模块会被补 */
     function patchMessageSheet() {
-        const sheetActions = metro.findByProps("openLazy", "hideActionSheet");
+        const sheetActions = getSheetActions();
 
         if (!sheetActions || typeof sheetActions.openLazy !== "function") {
             logger.warn("没找到 ActionSheet 入口，长按标记不可用（仍可用设置页按 ID 标记）");
@@ -551,28 +613,38 @@
         return m || null;
     }
 
-    /** 菜单进不来时的保底入口：一条输入框搞定标记 */
-    function askMarkById() {
-        ui.alerts.showInputAlert({
-            title: "按 ID 标记",
-            placeholder: "例如：123456789012345678 备注内容",
-            initialValue: "",
-            confirmText: "标记",
-            cancelText: "取消",
-            onConfirm: text => {
-                try {
-                    const raw = String(text || "").trim();
-                    const [id, ...rest] = raw.split(/\s+/);
-                    if (!/^\d{5,}$/.test(id || "")) {
-                        ui.toasts.showToast("开头那串得是数字用户 ID");
-                        return;
-                    }
-                    setMark(id, rest.join(" "), id, undefined);
-                } catch (e) {
-                    logger.error("按 ID 标记失败", e);
-                }
-            },
-        });
+    /** 长按菜单进不来时的保底入口：设置页里输 `用户ID 备注` */
+    function saveMarkById(raw) {
+        const [id, ...rest] = String(raw || "").trim().split(/\s+/);
+        if (!/^\d{5,}$/.test(id || "")) {
+            ui.toasts.showToast("开头那串得是数字用户 ID");
+            return false;
+        }
+        setMark(id, rest.join(" "), id, undefined);
+        return true;
+    }
+
+    function saveLogLimit(raw) {
+        const n = Math.floor(Number(raw));
+        if (!Number.isFinite(n) || n <= 0 || n > 20000) {
+            ui.toasts.showToast("填个 1 到 20000 之间的整数");
+            return false;
+        }
+        plugin.storage.messageLimit = n;
+        return true;
+    }
+
+    function copyText(text) {
+        try {
+            if (ui.clipboard && typeof ui.clipboard.setString === "function") {
+                ui.clipboard.setString(String(text || ""));
+                ui.toasts.showToast("已复制");
+            } else {
+                ui.toasts.showToast("这个端没有剪贴板接口");
+            }
+        } catch (e) {
+            logger.warn("复制失败", e);
+        }
     }
 
     function deleteLog(id) {
@@ -583,59 +655,8 @@
         }
     }
 
-    function askLogLimit() {
-        const current = getLogLimit();
-        ui.alerts.showInputAlert({
-            title: "日志上限",
-            placeholder: String(current),
-            initialValue: String(current),
-            confirmText: "保存",
-            cancelText: "取消",
-            onConfirm: text => {
-                try {
-                    const n = Math.floor(Number(text));
-                    if (Number.isFinite(n) && n > 0 && n <= 20000) plugin.storage.messageLimit = n;
-                } catch (e) {
-                    logger.warn("设置日志上限失败", e);
-                }
-            },
-        });
-    }
-
-    function openLogRowMenu(rec, refresh) {
-        const sheet = metro.findByProps("showSimpleActionSheet");
-        if (!sheet) return;
-
-        const m = rec.message || {};
-        sheet.showSimpleActionSheet({
-            key: "UserMarkLogRow",
-            header: { title: (m.content || "（无内容）").slice(0, 60) },
-            options: [
-                {
-                    label: "复制内容",
-                    onPress: () => {
-                        try {
-                            if (ui.clipboard && typeof ui.clipboard.setString === "function") {
-                                ui.clipboard.setString(m.content || "");
-                                ui.toasts.showToast("已复制");
-                            } else {
-                                ui.toasts.showToast("这个端没有剪贴板接口");
-                            }
-                        } catch (e) {
-                            logger.warn("复制失败", e);
-                        }
-                    },
-                },
-                {
-                    label: "删除记录",
-                    isDestructive: true,
-                    onPress: () => { deleteLog(rec.id); refresh(); },
-                },
-            ],
-        });
-    }
-
-    function renderLogRows(list, refresh) {
+    /** 记录行：点开就在下面摊出「复制 / 删除」，不借 Discord 的面板 */
+    function renderLogRows(list, expandedId, setExpanded) {
         if (!list.length) {
             return [React.createElement(Forms.FormRow, {
                 key: "no-log",
@@ -645,7 +666,8 @@
             })];
         }
 
-        return list.map(rec => {
+        const out = [];
+        for (const rec of list) {
             const m = (rec && rec.message) || {};
             const who = m.author
                 ? (m.author.global_name || m.author.username || m.author.id)
@@ -653,14 +675,33 @@
             const body = String(m.content || "").replace(/\s+/g, " ").trim();
             const preview = body ? (body.length > 40 ? body.slice(0, 40) + "…" : body) : "（无文字内容）";
             const when = rec.ts ? new Date(rec.ts).toLocaleTimeString() : "";
+            const open = expandedId === rec.id;
 
-            return React.createElement(Forms.FormRow, {
+            out.push(React.createElement(Forms.FormRow, {
                 key: `${rec.id}_${rec.ts}`,
                 label: preview,
-                subtext: `${who} · ${STATUS_TEXT[rec.status] || "普通"} · ${when}`,
-                onPress: () => openLogRowMenu(rec, refresh),
-            });
-        });
+                subtext: `${who} · ${STATUS_TEXT[rec.status] || "普通"} · ${when}${open ? " · 点收起" : ""}`,
+                onPress: () => setExpanded(open ? null : rec.id),
+            }));
+
+            if (!open) continue;
+            out.push(React.createElement(Forms.FormRow, {
+                key: `${rec.id}_copy`,
+                label: "复制这条内容",
+                subtext: body ? "" : "这条没有文字",
+                onPress: () => copyText(m.content || ""),
+            }));
+            out.push(React.createElement(Forms.FormRow, {
+                key: `${rec.id}_del`,
+                label: "删除这条记录",
+                destructive: true,
+                onPress: () => {
+                    deleteLog(rec.id);
+                    setExpanded(null);
+                },
+            }));
+        }
+        return out;
     }
 
     /* ================= 缓存中毒自救 =================
@@ -733,62 +774,63 @@
         return `已删除 ${removed[0]}，正在重载`;
     }
 
-    /* ================= 设置面板 ================= */
-
-    let simpleSheet; // undefined = 还没查过，null = 查过但没有
-    /** 同上：这个查询整个会话只做一次，别每次点行都全量扫描一遍 */
-    function getSimpleSheet() {
-        if (simpleSheet === undefined) {
-            try {
-                simpleSheet = metro.findByProps("showSimpleActionSheet") || null;
-            } catch {
-                simpleSheet = null;
-            }
-        }
-        return simpleSheet;
-    }
-
-    function openRowMenu(userId, refresh) {
-        const marks = readMarks();
-        const entry = marks[userId];
-        if (!entry) return;
-
-        const sheet = getSimpleSheet();
-        if (!sheet) return;
-
-        const name = entry.username || userId;
-
-        sheet.showSimpleActionSheet({
-            key: "UserMarkRow",
-            header: { title: entry.note || name },
-            options: [
-                {
-                    label: "编辑备注",
-                    onPress: () => askNote({ id: userId, username: name }),
-                },
-                {
-                    label: "取消标记",
-                    isDestructive: true,
-                    onPress: () => {
-                        removeMark(userId);
-                        ui.toasts.showToast(`已取消标记 ${name}`);
-                        refresh();
-                    },
-                },
-            ],
-        });
-    }
+    /* ================= 设置面板 =================
+       名单、备注、上限全部在这一页里就地展开编辑，不叫弹窗也不叫面板
+       （showSimpleActionSheet 也不用了：少一次 metro 查询，少一处会崩的地方）。 */
 
     function Settings() {
         const store = vdStorage.useProxy(plugin.storage);
         const marks = (store && store.marks) || {};
         const ids = Object.keys(marks);
+        const pending = store && store.pending;
 
         // useProxy 的代理是响应式的，删除后需要强制重渲染
         const [, forceUpdate] = React.useReducer(x => x + 1, 0);
         React.useEffect(() => forceUpdate(), [ids.length]);
         const [diag, setDiag] = React.useState(null);
         const [repair, setRepair] = React.useState({ armed: false, busy: false, msg: "" });
+        const [editor, setEditor] = React.useState(null); // {mode: note|id|limit, userId?, username?, value}
+        const [expandedLog, setExpandedLog] = React.useState(null);
+        const pendingId = pending && pending.userId ? String(pending.userId) : "";
+
+        // 长按标完人回到这页，备注框就自己摊开好
+        React.useEffect(() => {
+            if (!pendingId) return;
+            setEditor({
+                mode: "note",
+                userId: pendingId,
+                username: (pending && pending.username) || pendingId,
+                value: (getMark(pendingId) || {}).note || "",
+            });
+            try {
+                plugin.storage.pending = null;
+            } catch { /* 清不掉顶多下次进来再摊开一次 */ }
+        }, [pendingId]);
+
+        function openNoteEditor(userId) {
+            const entry = readMarks()[userId];
+            if (!entry) return;
+            setEditor({
+                mode: "note",
+                userId,
+                username: entry.username || userId,
+                value: entry.note || "",
+            });
+        }
+
+        function saveEditor() {
+            if (!editor) return;
+            let ok = true;
+            if (editor.mode === "note") {
+                setMark(editor.userId, editor.value, editor.username, undefined);
+            } else if (editor.mode === "id") {
+                ok = saveMarkById(editor.value);
+            } else if (editor.mode === "limit") {
+                ok = saveLogLimit(editor.value);
+            }
+            if (ok) setEditor(null);
+            forceUpdate();
+        }
 
         const children = [];
 
@@ -797,7 +839,7 @@
                 React.createElement(Forms.FormRow, {
                     key: "empty",
                     label: "还没有标记任何人",
-                    subtext: "长按一条消息 → 标记此用户",
+                    subtext: "长按一条消息 → 标记此用户，回这页写备注",
                     disabled: true,
                 })
             );
@@ -815,7 +857,7 @@
                         key: id,
                         label: entry.note || entry.username || id,
                         subtext: `${entry.username || id} · 标记于 ${when}${sourceShort ? ` · 来源：${sourceShort}` : ""}`,
-                        onPress: () => openRowMenu(id, forceUpdate),
+                        onPress: () => openNoteEditor(id),
                     })
                 );
             }
@@ -825,6 +867,55 @@
             Forms.FormSection,
             { title: `被标记用户（${ids.length}）` },
             ...children
+        );
+
+        const editorInput = editor ? makeInput({
+            key: "usermark-input",
+            value: editor.value,
+            placeholder: editor.mode === "note" ? "例如：半夜刷屏那位，可以留空"
+                : editor.mode === "id" ? "123456789012345678 备注内容"
+                : String(getLogLimit()),
+            onChange: v => setEditor({ ...editor, value: v }),
+        }) : null;
+
+        const editorSection = editor && React.createElement(
+            Forms.FormSection,
+            {
+                title: editor.mode === "note" ? `给「${editor.username}」写备注`
+                    : editor.mode === "id" ? "按 ID 标记"
+                    : "发言记录上限",
+            },
+            editorInput || React.createElement(Forms.FormRow, {
+                key: "no-input",
+                label: "这台设备找不到可用的输入框",
+                subtext: "长按标记本身还是能用（备注留空）",
+                disabled: true,
+            }),
+            React.createElement(Forms.FormRow, {
+                key: "usermark-save",
+                label: editor.mode === "id" ? "标记" : "保存",
+                subtext: editor.mode === "note" ? "留空也算标记成功" : "",
+                onPress: saveEditor,
+            }),
+            React.createElement(Forms.FormRow, {
+                key: "usermark-cancel",
+                label: "取消",
+                onPress: () => setEditor(null),
+            }),
+            ...(editor.mode === "note" && marks[editor.userId] ? [
+                React.createElement(Forms.FormRow, {
+                    key: "usermark-unmark",
+                    label: "取消标记这个人",
+                    subtext: "连备注一起删掉",
+                    destructive: true,
+                    onPress: () => {
+                        removeMark(editor.userId);
+                        setEditor(null);
+                        ui.toasts.showToast("已取消标记");
+                        forceUpdate();
+                    },
+                }),
+            ] : [])
         );
 
         const repairSection = React.createElement(
@@ -861,7 +952,7 @@
                 key: "mark-by-id",
                 label: "按 ID 标记一个用户",
                 subtext: "长按菜单进不来时用这个：输入 用户ID 备注",
-                onPress: askMarkById,
+                onPress: () => setEditor({ mode: "id", value: "" }),
             }),
             React.createElement(Forms.FormRow, {
                 key: "mark-diag",
@@ -892,18 +983,19 @@
         return React.createElement(
             React.Fragment,
             null,
+            editorSection,
             idSection,
             markedSection,
             repairSection,
             React.createElement(
                 Forms.FormSection,
                 { title: `标记用户发言（${markedLogs.length}/${getLogLimit()}）` },
-                ...renderLogRows(markedLogs.slice(0, 30), forceUpdate),
+                ...renderLogRows(markedLogs.slice(0, 30), expandedLog, setExpandedLog),
                 React.createElement(Forms.FormRow, {
                     key: "log-limit",
                     label: `记录上限：${getLogLimit()} 条`,
                     subtext: "只存名单内用户的发言",
-                    onPress: askLogLimit,
+                    onPress: () => setEditor({ mode: "limit", value: String(getLogLimit()) }),
                 }),
                 React.createElement(Forms.FormRow, {
                     key: "log-clear",
