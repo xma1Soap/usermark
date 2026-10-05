@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from "@webpack/common";
 
-import { countMarkedIDB, countMessagesByStatusIDB, countMessagesIDB, DBMessageRecord, DBMessageStatus, getDateStortedMarkedIDB, getDateStortedMessagesByStatusIDB } from "../db";
+import { countMessagesByStatusIDB, countMessagesIDB, DBMessageRecord, DBMessageStatus, getDateStortedMessagesByStatusIDB } from "../db";
 import { doesMatch, tokenizeQuery } from "../utils/parseQuery";
 import { LogTabs } from "./LogsModal";
 
@@ -45,22 +45,11 @@ export function useMessages(query: string, currentTab: LogTabs, sortNewest: bool
 
         const loadMessages = async () => {
             const status = getStatus(currentTab);
-            const isMarkedTab = currentTab === LogTabs.MARKED;
-
-            const fetchMessages = (newest: boolean, limit: number) =>
-                isMarkedTab
-                    ? getDateStortedMarkedIDB(newest, limit)
-                    : getDateStortedMessagesByStatusIDB(newest, limit, status);
-
-            const fetchTotal = () =>
-                isMarkedTab
-                    ? countMarkedIDB()
-                    : countMessagesByStatusIDB(status);
 
             if (debouncedQuery === "") {
                 const [messages, statusTotal] = await Promise.all([
-                    fetchMessages(sortNewest, numDisplayedMessages),
-                    fetchTotal(),
+                    getDateStortedMessagesByStatusIDB(sortNewest, numDisplayedMessages, status),
+                    countMessagesByStatusIDB(status),
                 ]);
 
 
@@ -71,7 +60,7 @@ export function useMessages(query: string, currentTab: LogTabs, sortNewest: bool
 
                 setPending(false);
             } else {
-                const allMessages = await fetchMessages(sortNewest, Number.MAX_SAFE_INTEGER);
+                const allMessages = await getDateStortedMessagesByStatusIDB(sortNewest, Number.MAX_SAFE_INTEGER, status);
                 const { queries, rest } = tokenizeQuery(debouncedQuery);
 
                 const filteredMessages = allMessages.filter(record => {
@@ -114,8 +103,6 @@ function getStatus(currentTab: LogTabs) {
             return DBMessageStatus.DELETED;
         case LogTabs.EDITED:
             return DBMessageStatus.EDITED;
-        case LogTabs.MARKED:
-            return DBMessageStatus.NORMAL;
         default:
             return DBMessageStatus.GHOST_PINGED;
     }

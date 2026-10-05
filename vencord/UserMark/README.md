@@ -11,11 +11,12 @@
 | 消息头 | 名字后面挂 `[被标记]` 徽标 |
 | 成员列表 | 名字后面挂 `[被标记]` 徽标（可在设置里关） |
 | 频道右上角 | 一排图标最左边多出一枚**问号**图标（tooltip「标记发言」），点开自己的记录弹窗 |
-| 输入框工具栏 | 一枚「标记发言」图标（`LogIcon`），同一个弹窗 |
 | Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑、删除，右上角有「查看标记发言」 |
-| 「标记发言」弹窗 | 名单带（每人一枚标签）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文。点一行跳回原消息，右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」 |
+| 「标记发言」弹窗 | 名单带（每人一枚标签）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文；被标记时「用来标记的那条」左边压一条竖杠、头上挂一枚「标记来源」标签。点一行跳回原消息，右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」，右键名单标签可「修改标记 / 跳到标记来源 / 取消标记」 |
 
-三个入口都只指向同一个 `openMarkedMessagesModal()`，全部不依赖日志插件。右上角那枚走 Discord 自己的 `HeaderBarIcon`（`findComponentByCodeLazy(".HEADER_BAR_BADGE_BOTTOM,", 'position:"bottom"')`），注入点是 `toolbar: … mobileToolbar: …` 那个组件的补丁，跟日志插件用的是同一处、各自插自己的调用（补丁里的 `$self` 按插件实例替换，不会互相盖）。输入框那颗走 Vencord 的 `ChatButtons` API，它由内置插件 `ChatInputButtonAPI` 的补丁负责往里塞，所以这个 API 名字**必须写在 `dependencies` 里**：不声明的话 `addChatBarButton()` 一样跑得不声不响、不报错，但图标根本不会出现（`MessageDecorationsAPI` / `MemberListDecoratorsAPI` 同理）。
+弹窗有两个入口（右上角问号、设置页名单面板的「查看标记发言」），都指向同一个 `openMarkedMessagesModal()`，全部不依赖日志插件。右上角那枚走 Discord 自己的 `HeaderBarIcon`（`findComponentByCodeLazy(".HEADER_BAR_BADGE_BOTTOM,", 'position:"bottom"')`），注入点是 `toolbar: … mobileToolbar: …` 那个组件的补丁，跟日志插件的按钮用的是同一处、各自插自己的调用（补丁里的 `$self` 按插件实例替换，不会互相盖）。
+
+输入框工具栏那颗按钮已经撤了：入口只留右上角一处，一个功能不需要两个门。撤的时候顺手把 `dependencies` 里的 `ChatInputButtonAPI` 一起删了——留着一个不用的 API 依赖，等于让插件被强制启用一个用不上的内置插件。
 
 
 ## 与 ShowMeYourName 的顺序
@@ -134,7 +135,7 @@ node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链
 
 ```powershell
 cd "C:\Users\11028\Documents\.Hanako\usermark-tests\standalone"
-node build.mjs                 # 104 条，全绿才是 0 失败
+node build.mjs                 # 110 条，全绿才是 0 失败
 ```
 
 它用 `fake-idb.mjs` 顶掉 `indexedDB`（写入同样过 `structuredClone`，所以「把带 getter 的 flux Message 直接塞进库」在桩里也会像真机一样抛 DataCloneError），用 `stub-webpack.mjs` 顶掉 `RestAPI` / `FluxDispatcher` / 各种 store，然后跑真的 `records.ts` / `db.ts` / `capture.ts` / `backfill.ts`。钉住的是这几件事：
@@ -146,58 +147,23 @@ node build.mjs                 # 104 条，全绿才是 0 失败
 - 取消标记后那个人的记录立刻不再显示，但行还在库里（重新标记就回来）
 - 闸门契约：并排发两条回溯时第二条必然 `skipped`（把坑本身钉住），串着发两条都跑到、库里两条都在
 - ⑨ 静态对齐：弹窗里每个 `cl("...")` 吐出的类名在 `styles.css` 都有规则、样式表里也没有没人认领的孤儿类名，状态类必须是带前缀的整名，令牌得在 Vencord 自带样式里有先例
+- ⑨ 观感契约：搜索框不用 Discord 的 `TextInput`（它在这个弹窗里就是浏览器默认的白框）、`.vc-usermark-logs-search` 自己用 `--input-background-default` 上色、「标记来源」的标识类名都在、名单标签右键有「跳到标记来源」
+- ⑨ 反向契约：日志插件目录里再扫不到 `UserMark` / `markedUsers` / `markedFetch` / `MarkedUsersStrip` / `MarkNoteModal` / `logMarkedUsers` / `LogTabs.MARKED` 任何一个，子页面不会被哪天又长回来
 
 弹窗本身要真 Discord 才渲染得动，这块离线只验到类名和筛选逻辑；点开的表现还得实测。
 
-## （可选）与消息记录器的联动
+## 与消息记录器的关系
 
-UserMark 现在**自己就能记**，装不装日志插件都不影响上面那条链路。`vc-message-logger-enhanced`（日志插件）是另一套独立实现，它会读同一份名单，所以也带一份标记发言的视图：
+两边**彻底独立**了。`vc-message-logger-enhanced` 里曾经有一份 UserMark 的子页面（「标记用户发言」页签、标签栏下的名单带、行上的「标记来源」标识、行右键的修改 / 取消标记、`logMarkedUsers` 开关，外加 `utils/markedUsers.ts` / `utils/markedFetch.ts` / `components/MarkedUsersStrip.tsx` / `components/MarkNoteModal.tsx`），现在全删了。同一件事不必在两个插件里各做一遍，UserMark 自己的弹窗功能不减反增：
 
-- 被标记用户发出的消息（非临时消息）会直接写进日志库，**不受日志插件的黑白名单限制**
-- 日志弹窗的「幽灵提及」右边多出一个「标记用户发言」页签
-- 该页签按**作者**过滤而非按状态，所以他们的已删除、已编辑消息也会出现在这里；反过来，一条消息被删了也不会从这个页签消失
-- 日志插件设置里有 `记录被 UserMark 标记的用户…` 开关，不想要可单独关
+- 「标记来源」标识 → 移植进 `MarkedMessagesModal.tsx`：命中 `marks[人].sourceMessage.id` 的那行左边压一条竖杠、头上挂一枚标签
+- 名单标签的「查看标记来源」→ 移植成标签右键里的「跳到标记来源」，直接 `jumpToMessage` 到那条，比原来往搜索框塞 `from:<人> message:<那条>` 更准
+- 「标记用户发言」页签原本是日志库里 `NORMAL` 状态记录唯一的落脚点 → UserMark 的库不分状态全摆，所以不算损失；日志那边只喂这个页签的 `logMarkedUsers` 捕获随之删掉
+- 行右键的修改标记 / 取消标记 → UserMark 的行右键和消息右键菜单本来就有
 
-读取方式是直接读 Vencord 全局 `Settings.plugins.UserMark.marks`，不 import 模块，所以 UserMark 被禁用时日志插件不会崩。
+日志库里已经存着的 `NORMAL` 记录（旧版那个页签写进去的）不会自己消失，也不再被任何页签显示，`清空所有日志` 能清掉。`DBMessageStatus.NORMAL` 这个枚举成员特意留着，就是让类型还认得这些历史数据。
 
-### 回溯拉取
-
-网关推送只覆盖当前订阅的频道，重启前、没打开的服务器都会漏，所以页签还挂了一条回溯路径，**范围限定在你当前打开的频道**：
-
-- 服务器频道：`GET /guilds/{id}/messages/search?channel_id=&author_id=`，一个用户一页请求，翻到标记时间之前就停（最多 10 页，每页 25 条）
-- 私聊 / 群聊没有搜索接口，改读频道历史 `GET /channels/{id}/messages`（每页 100 条，最多 4 页），读到的按名单过滤
-- 请求间隔 250ms，撞 429 立即收手；两次自动拉取间隔至少 60 秒
-- 页脚有「拉取本频道标记发言」按钮，点了强制拉，不受冷却限制
-- 页签**不按标记时间过滤**（把标记之前的发言也摆出来），所以「用来标记的那条」也能出现
-- DM 不走搜索接口（Discord 搜索只支持服务器），靠实时捕获，私聊始终订阅所以不会漏
-
-### 标记来源那条消息
-
-被标记时用来标记的那条消息，在日志里会多一条左侧竖线加「标记来源」小徽标。要看到它有两条路径：
-
-- 弹窗一打开就按 `sourceMessage.id` + `channelId` 精确回源补一次（这条必然早于标记时刻，靠频道回溯经常挤不进页签首页）
-- 名单标签右键「查看标记来源」，把搜索框填成 `from:<用户ID> message:<消息ID>` 直达；搜索框非空时查询是全量扫描，不受「一次显示 N 条」限制
-
-徽标是否出现是**订阅**名单算的，不是挂载时拍快照：弹窗开着的时候在外面改了名单、或者右键取消了标记，行会立刻跟着变。
-
-### 标记用户名单带
-
-日志弹窗标签栏下面那一条（搜索框与消息列表之间）给每个被标记用户摆一枚标签，三样一起上：**头像 + 当前频道里显示的名字 + 备注**。
-
-- 名字按「当前服务器的昵称 → 私聊备注名 → 全局名 → 用户名」依次取，档案还没缓存下来就直接摆 snowflake ID（可辨认、可复制）
-- 头像跟着当前服务器走（有服务器头像就用服务器的）
-- 超过 6 人就先只露前 6 个，剩下的收成 `+N`，最右侧给一个「展开 N 人 / 收起」；折叠态是单行不换行，标签自己收缩省略，`+N` 和展开按钮不会被挤出去
-- 鼠标悬停显示：名字、用户 ID、标记时间、备注、标记来源那条消息
-- 点标签 = 把搜索框填成 `from:<用户ID>` 筛这个人，再点一次取消；在哪个页签都生效
-- 右键标签 = 「查看标记来源 / 修改标记 / 取消标记」。后两项直接写 Vencord 全局 `Settings.plugins.UserMark.marks`，所以 UserMark 那边（设置页名单面板、右键菜单）同步生效，不需要两个插件互相 import
-- 备注为空、或备注跟名字一模一样时，就不多摆一段重复的
-- 一个都没标记时整条隐藏
-
-配色全部走 Discord 的主题令牌（`--background-mod-*` / `--text-default` / `--border-subtle`）。**别改回 `--header-primary`**：Discord 已经移除这个变量，取不到值会退成代码里写的 `#111`，暗色主题下等于隐形。也别把状态类写成 `.msg-logger-marked-chip.active` —— `classNameFactory` 会给**每个**类名加前缀，实际吐出的类是 `msg-logger-marked-chip-active`，复合选择器永远匹配不上（折叠和选中态都曾经因此是死规则）。
-
-还有条时序上的坑：**store 只能在 hook 里现取，不能在模块顶层抄进常量**。`@webpack/common` 里的 `UserStore` / `GuildMemberStore` 那几个是 `waitForStore` 异步赋值的 `export let` 绑定，插件模块启动时就求值完了，那时还是 `undefined`；顶层 `const X = [UserStore, ...]` 会把三个 undefined 永久存进数组，`useStateFromStores` 拿它调 `addChangeListener` 就抛。因为日志弹窗是懒加载的，真机上表现为「一点开日志整个 Discord 崩掉」（That also failed）。桩已经会复现这个时序，改回去会直接红。
-
-注意：日志插件的 `最多保存多少条消息` 默认 **200**，是全库总量上限，标记发言也会跟着被顶掉。想留得久把它调大或设 0（不限制）。
+名单带的观感规矩（配色只能用 `--background-mod-*` / `--text-default` / `--border-subtle`，`--header-primary` 已被 Discord 移除，取不到值会退成代码里写的深色、暗色主题下等于隐形；状态类必须写成带前缀的整名 `.vc-usermark-chip-active`，因为 `classNameFactory` 会给**每个**类名加前缀，`.chip.active` 这种复合选择器永远匹配不上）和 **store 只能在 hook 里现取、不能在模块顶层抄进常量**（`@webpack/common` 里那些是 `waitForStore` 异步赋值的 `export let`，顶层抄进数组等于永久存进 `undefined`，`useStateFromStores` 一调就抛）——都是从日志弹窗那一版踩出来的，UserMark 的弹窗照搬了同样的写法，别改回去。
 
 ## 已知限制
 

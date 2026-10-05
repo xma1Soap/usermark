@@ -36,6 +36,25 @@
 .vc-usermark-logs-search {
     flex: 1 1 12rem;
     min-width: 10rem;
+    box-sizing: border-box;
+    /* 自己写的 input：这几条会被宿主/浏览器默认压掉，逐条 !important 压回来（chip 那边同理） */
+    padding: 6px 10px !important;
+    border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.32)) !important;
+    border-radius: 6px !important;
+    background: var(--input-background-default, rgba(0, 0, 0, 0.2)) !important;
+    color: var(--text-default, #fff) !important;
+    font-size: 13px !important;
+    line-height: 18px;
+    font-family: inherit;
+}
+
+.vc-usermark-logs-search:focus {
+    border-color: var(--brand-experiment, #5865f2) !important;
+    outline: none;
+}
+
+.vc-usermark-logs-search::placeholder {
+    color: var(--text-muted, rgba(255, 255, 255, 0.5));
 }
 
 .vc-usermark-logs-count {
@@ -221,6 +240,21 @@
     background: var(--background-mod-strong, rgba(128, 128, 128, 0.3));
     color: var(--text-default, #fff);
     font-size: 11px;
+}
+
+/* 「标记来源」那行：左边压一条竖杠，头上挂一枚品牌色标签 */
+.vc-usermark-row-source-accent {
+    border-left: 3px solid var(--brand-experiment, #5865f2);
+}
+
+.vc-usermark-row-source-tag {
+    padding: 0 4px;
+    border-radius: 3px;
+    background: var(--brand-experiment, #5865f2);
+    color: #fff;
+    font-size: 11px;
+    font-weight: 600;
+    white-space: nowrap;
 }
 
 .vc-usermark-row-meta {

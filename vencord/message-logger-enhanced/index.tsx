@@ -28,7 +28,6 @@ import { cleanUpCachedMessage, cleanupUserObject, getNative, isGhostPinged, mapT
 import { removeContextMenuBindings, setupContextMenuPatches } from "./utils/contextMenu";
 import { shouldIgnore } from "./utils/index";
 import { LimitedMap } from "./utils/LimitedMap";
-import { isMarkedAuthor } from "./utils/markedUsers";
 import { doesMatch } from "./utils/parseQuery";
 import * as imageUtils from "./utils/saveImage";
 import * as ImageManager from "./utils/saveImage/ImageManager";
@@ -161,25 +160,6 @@ async function messageUpdateHandler(payload: MessageUpdatePayload) {
 }
 
 function messageCreateHandler(payload: MessageCreatePayload) {
-    // 被 UserMark 标记的用户：无论黑白名单，发言直接入库，供「标记用户发言」页签展示
-    try {
-        const flags = (payload.message as any)?.flags ?? 0;
-        const isEphemeral = (flags & 64) === 64; // MessageFlags.EPHEMERAL
-
-        if (
-            !isEphemeral &&
-            settings.store.logMarkedUsers &&
-            isMarkedAuthor(payload.message?.author?.id) &&
-            payload.message?.channel_id
-        ) {
-            // cleanupMessage 对缺字段的消息会抛，异步链不能让 rejection 溜出去
-            addMessage(payload.message as any, idb.DBMessageStatus.NORMAL)
-                .catch(e => Flogger.error("Failed to store marked user message", e));
-        }
-    } catch (e) {
-        Flogger.error("Failed to log marked user message", e);
-    }
-
     // we do this here because cache is limited and to save memory
     if (!settings.store.cacheMessagesFromServers && payload.guildId != null) {
         const ids = [payload.channelId, payload.message?.author?.id, payload.guildId];

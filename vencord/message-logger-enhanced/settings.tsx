@@ -183,12 +183,6 @@ export const settings = definePluginSettings({
         description: "最多保存多少条消息。达到上限后自动删除最旧的记录。0 = 不限制"
     },
 
-    logMarkedUsers: {
-        default: true,
-        type: OptionType.BOOLEAN,
-        description: "记录被 UserMark 标记的用户发出的发言，并在日志的「标记用户发言」页签展示。",
-    },
-
     attachmentSizeLimitInMegabytes: {
         default: 12,
         type: OptionType.NUMBER,

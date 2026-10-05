@@ -23,7 +23,6 @@ import {
     openModal,
     RelationshipStore,
     SelectedChannelStore,
-    TextInput,
     useEffect,
     useMemo,
     UserStore,
@@ -34,7 +33,7 @@ import { fetchCurrentChannel, fetchMarkedSourceMessages } from "./backfill";
 import { clearRecords, getAllRecords } from "./db";
 import { openMarkModal } from "./MarkModal";
 import { MarkedRecord, selectRecords } from "./records";
-import { asMarkMap, removeMark, settings } from "./settings";
+import { asMarkMap, MarkEntry, MarkSourceMessage, removeMark, settings } from "./settings";
 import { formatTimestamp } from "./utils";
 
 const Flogger = new Logger("UserMark", "#eb459e");
@@ -114,16 +113,20 @@ export function openMarkedMessagesModal(): void {
 interface ChipProps {
     userId: string;
     note: string;
+    source?: MarkSourceMessage;
     guildId: string | undefined;
     active: boolean;
     onClick: () => void;
     onUnmark: (userId: string) => void;
+    onViewSource: (source: MarkSourceMessage) => void;
 }
 
-function ChipContextMenu({ displayName, userId, onUnmark }: {
+function ChipContextMenu({ displayName, userId, source, onUnmark, onViewSource }: {
     displayName: string;
     userId: string;
+    source?: MarkSourceMessage;
     onUnmark: () => void;
+    onViewSource: () => void;
 }) {
     return (
         <Menu.Menu
@@ -137,6 +140,15 @@ function ChipContextMenu({ displayName, userId, onUnmark }: {
                 label="修改标记"
                 action={() => openMarkModal({ id: userId, username: displayName })}
             />
+            {/* 从用户菜单标的没有「用来标记的那条」，这时候压根不给这一项 */}
+            {!!source?.id && !!source.channelId && (
+                <Menu.MenuItem
+                    key="vc-usermark-chip-source"
+                    id="vc-usermark-chip-source"
+                    label="跳到标记来源"
+                    action={onViewSource}
+                />
+            )}
             <Menu.MenuItem
                 key="vc-usermark-chip-unmark"
                 id="vc-usermark-chip-unmark"
@@ -148,7 +160,7 @@ function ChipContextMenu({ displayName, userId, onUnmark }: {
     );
 }
 
-function Chip({ userId, note, guildId, active, onClick, onUnmark }: ChipProps) {
+function Chip({ userId, note, source, guildId, active, onClick, onUnmark, onViewSource }: ChipProps) {
     const displayName = useDisplayName(userId, guildId);
     const avatarUrl = useAvatarUrl(userId, guildId);
 
@@ -158,7 +170,13 @@ function Chip({ userId, note, guildId, active, onClick, onUnmark }: ChipProps) {
             className={cl("chip", active && "chip-active")}
             onClick={onClick}
             onContextMenu={e => ContextMenuApi.openContextMenu(e, () =>
-                <ChipContextMenu displayName={displayName} userId={userId} onUnmark={() => onUnmark(userId)} />
+                <ChipContextMenu
+                    displayName={displayName}
+                    userId={userId}
+                    source={source}
+                    onUnmark={() => onUnmark(userId)}
+                    onViewSource={() => source && onViewSource(source)}
+                />
             )}
         >
             {!!avatarUrl && <img className={cl("chip-avatar")} src={avatarUrl} alt="" width={16} height={16} />}
@@ -169,12 +187,13 @@ function Chip({ userId, note, guildId, active, onClick, onUnmark }: ChipProps) {
 }
 
 interface StripProps {
-    marks: Record<string, { note?: string; }>;
+    marks: Record<string, MarkEntry>;
     activeUserId: string | null;
     onPick: (userId: string | null) => void;
+    onViewSource: (source: MarkSourceMessage) => void;
 }
 
-function UserStrip({ marks, activeUserId, onPick }: StripProps) {
+function UserStrip({ marks, activeUserId, onPick, onViewSource }: StripProps) {
     const [expanded, setExpanded] = useState(false);
     const guildId = useCurrentGuildId();
 
@@ -193,6 +212,7 @@ function UserStrip({ marks, activeUserId, onPick }: StripProps) {
                     key={userId}
                     userId={userId}
                     note={(marks[userId]?.note ?? "").trim()}
+                    source={marks[userId]?.sourceMessage}
                     guildId={guildId}
                     active={activeUserId === userId}
                     onClick={() => onPick(activeUserId === userId ? null : userId)}
@@ -200,6 +220,7 @@ function UserStrip({ marks, activeUserId, onPick }: StripProps) {
                         removeMark(userId);
                         if (activeUserId === userId) onPick(null);
                     }}
+                    onViewSource={onViewSource}
                 />
             ))}
 
@@ -217,6 +238,8 @@ function UserStrip({ marks, activeUserId, onPick }: StripProps) {
 interface RowProps {
     record: MarkedRecord;
     note: string;
+    /** 这条就是这个人被标记时用的那条消息 */
+    isSource: boolean;
     onJump: (record: MarkedRecord) => void;
     onUnmark: (userId: string) => void;
 }
@@ -258,7 +281,7 @@ function RowContextMenu({ record, displayName, onJump, onUnmark }: {
     );
 }
 
-function Row({ record, note, onJump, onUnmark }: RowProps) {
+function Row({ record, note, isSource, onJump, onUnmark }: RowProps) {
     const guildId = record.guildId ?? undefined;
     const displayName = useDisplayName(record.authorId, guildId);
     const avatarUrl = useAvatarUrl(record.authorId, guildId);
@@ -267,7 +290,7 @@ function Row({ record, note, onJump, onUnmark }: RowProps) {
 
     return (
         <div
-            className={cl("row", statusLabel && "row-muted")}
+            className={cl("row", statusLabel && "row-muted", isSource && "row-source-accent")}
             onClick={() => onJump(record)}
             onContextMenu={e => ContextMenuApi.openContextMenu(e, () => (
                 <RowContextMenu
@@ -284,6 +307,7 @@ function Row({ record, note, onJump, onUnmark }: RowProps) {
                 <div className={cl("row-head")}>
                     <span className={cl("row-name")}>{displayName}</span>
                     {!!note && note !== displayName && <span className={cl("row-note")}>{note}</span>}
+                    {isSource && <span className={cl("row-source-tag")}>标记来源</span>}
                     <span className={cl("row-meta")}>
                         {channelLabel} · {formatTimestamp(record.timestamp)}
                         {!!statusLabel && ` · ${statusLabel}`}
@@ -349,15 +373,19 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
         [records, marks, authorId, query, newest]
     );
 
-    const jumpTo = (record: MarkedRecord) => {
+    const jumpToMessage = (channelId: string, messageId: string) => {
         try {
-            if (record.channelId !== SelectedChannelStore.getChannelId()) {
-                FluxDispatcher.dispatch({ type: "SELECT_CHANNEL", guildId: record.guildId, channelId: record.channelId });
+            if (channelId !== SelectedChannelStore.getChannelId()) {
+                FluxDispatcher.dispatch({
+                    type: "SELECT_CHANNEL",
+                    guildId: ChannelStore.getChannel(channelId)?.guild_id ?? "@me",
+                    channelId
+                });
             }
 
             MessageActions.jumpToMessage({
-                channelId: record.channelId,
-                messageId: record.id,
+                channelId,
+                messageId,
                 flash: true,
                 jumpType: "INSTANT",
             });
@@ -366,6 +394,14 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
         } catch (e) {
             Flogger.error("跳转失败", e);
         }
+    };
+
+    const jumpTo = (record: MarkedRecord) => jumpToMessage(record.channelId, record.id);
+
+    // 名单标签右键用：跳到「当初拿来标记他的那条」，那条自己也在这份库里
+    const jumpToSource = (source: MarkSourceMessage) => {
+        if (!source?.id || !source.channelId) return;
+        jumpToMessage(source.channelId, source.id);
     };
 
     const runFetch = async () => {
@@ -388,7 +424,7 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
             {...modalProps}
             size="lg"
             title="标记发言"
-            subtitle="只记录被标记用户的发言，存在 UserMark 自己的本地库里。"
+            subtitle="只记录被标记用户的发言"
             actions={[
                 { text: "关闭", variant: "secondary", onClick: () => closeDialog(modalProps) }
             ]}
@@ -401,10 +437,13 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
                 )}
 
                 <div className={cl("logs-toolbar")}>
-                    <TextInput
+                    {/* 不用 @webpack/common 的 TextInput：实测它在这个弹窗里就是浏览器默认的白框，
+                        主题类挂不到 input 身上。自己写一个，颜色全走 Discord 令牌，明暗主题都跟着走。 */}
+                    <input
+                        type="text"
                         className={cl("logs-search")}
                         value={query}
-                        onChange={setQuery}
+                        onChange={e => setQuery(e.target.value)}
                         placeholder="搜索发言内容"
                     />
                     <Button variant="secondary" size="small" disabled={fetching} onClick={runFetch}>
@@ -439,7 +478,7 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
                     </span>
                 </div>
 
-                <UserStrip marks={marks} activeUserId={authorId} onPick={setAuthorId} />
+                <UserStrip marks={marks} activeUserId={authorId} onPick={setAuthorId} onViewSource={jumpToSource} />
 
                 <div className={cl("list")}>
                     {rows.length === 0 && (
@@ -455,6 +494,7 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
                             key={record.id}
                             record={record}
                             note={(marks[record.authorId]?.note ?? "").trim()}
+                            isSource={marks[record.authorId]?.sourceMessage?.id === record.id}
                             onJump={jumpTo}
                             onUnmark={userId => {
                                 removeMark(userId);

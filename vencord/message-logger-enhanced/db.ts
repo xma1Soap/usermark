@@ -8,14 +8,13 @@ import { LoggedMessageJSON } from "./types";
 import { getMessageStatus } from "./utils";
 import { DB_NAME, DB_VERSION } from "./utils/constants";
 import { DBSchema, IDBPDatabase, openDB } from "./utils/idb";
-import { getMarkedMarks } from "./utils/markedUsers";
 import { getAttachmentBlobUrl } from "./utils/saveImage";
 
 export enum DBMessageStatus {
     DELETED = "DELETED",
     EDITED = "EDITED",
     GHOST_PINGED = "GHOST_PINGED",
-    /** 被 UserMark 标记用户的普通发言（未删除、未编辑） */
+    /** 老版本「标记用户发言」页签写进库的那批普通发言，现在不再写入，但读旧库仍会碰到 */
     NORMAL = "NORMAL",
 }
 
@@ -175,57 +174,6 @@ export async function getMessagesByChannelAndAfterTimestampIDB(channel_id: strin
     }
 
     return cacheRecords(messages);
-}
-
-/**
- * 「标记用户发言」专用查询：按时间倒序/正序，只保留名单内作者的记录。
- * 不按状态区分（已删除/已编辑的也会出现），也**不按标记时间过滤** ——
- * 否则「标记时用来标记的那条」永远进不了这个页签（它必然早于标记时刻）。
- */
-export async function getDateStortedMarkedIDB(newest: boolean, limit: number) {
-    const marked = getMarkedMarks();
-    if (Object.keys(marked).length === 0) return [];
-
-    const tx = db.transaction("messages", "readonly");
-    const index = tx.store.index("by_timestamp");
-    const cursor = await index.openCursor(undefined, newest ? "prev" : "next");
-
-    if (!cursor) return [];
-
-    const messages: DBMessageRecord[] = [];
-    for await (const c of cursor) {
-        if (isMarkedAuthor(c.value, marked)) {
-            messages.push(c.value);
-            if (messages.length >= limit) break;
-        }
-    }
-
-    return cacheRecords(messages);
-}
-
-/** 标记用户记录总数，用于「加载更多」的判断 */
-export async function countMarkedIDB() {
-    const marked = getMarkedMarks();
-    if (Object.keys(marked).length === 0) return 0;
-
-    const tx = db.transaction("messages", "readonly");
-    const cursor = await tx.store.index("by_timestamp").openCursor();
-
-    if (!cursor) return 0;
-
-    let count = 0;
-    for await (const c of cursor) {
-        if (isMarkedAuthor(c.value, marked)) count++;
-    }
-
-    return count;
-}
-
-function isMarkedAuthor(
-    record: DBMessageRecord,
-    marked: Record<string, { markedAt: number; }>
-): boolean {
-    return Boolean(record.message?.author?.id) && record.message.author.id in marked;
 }
 
 export async function addMessageIDB(message: LoggedMessageJSON, status: DBMessageStatus) {

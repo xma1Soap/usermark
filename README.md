@@ -7,7 +7,7 @@
 ```
 vencord/
   UserMark/                     桌面版插件（完整，可直接用；自带本地记录库）
-  message-logger-enhanced/      对日志插件的改动（可选，覆盖同名文件）
+  message-logger-enhanced/      对日志插件的改动（只剩中文文案与观感修正，同名文件覆盖）
 kettu/
   index.js  manifest.json       手机版插件（Vendetta polymanifest 格式）
 ```
@@ -19,13 +19,13 @@ kettu/
 - 右键**人**或**他的消息** → 「标记」→ 写备注
 - 消息头、成员列表名字后面挂 `[被标记]`，悬停看备注和两个时间
 - 插件设置页有名单面板：搜索、编辑、删除
-- **自带「标记发言」弹窗**：频道右上角那枚**问号**图标（或输入框工具栏那枚、或名单面板右上角的按钮）。被标记用户的发言进自己的 IndexedDB（`UserMarkMessagesIDB`），删除和编辑都留痕，**不装日志插件也能用**
+- **自带「标记发言」弹窗**：频道右上角那枚**问号**图标（或名单面板右上角的按钮）。被标记用户的发言进自己的 IndexedDB（`UserMarkMessagesIDB`），删除和编辑都留痕，**不装日志插件也能用**
 - 读数据的方式是直接读 Vencord 全局 `Settings.plugins.UserMark.marks`，所以别的插件也能复用这份名单
 
 ### 三个闸门
 
 1. `authorization: Bearer public` + 指纹头（OpenCode Zen 免密车道）——与本仓库无关，见下方说明
-2. 装饰槽位依赖 `MessageDecorationsAPI` / `MemberListDecoratorsAPI`，输入框工具栏那颗图标依赖 `ChatInputButtonAPI`，首次启用会提示需要重启
+2. 装饰槽位依赖 `MessageDecorationsAPI` / `MemberListDecoratorsAPI`，右上角那颗图标靠插件自己的补丁注入 `toolbar`，首次启用会提示需要重启
 3. 名单是纯本地数据，存在 `settings.json` 的 `plugins.UserMark.marks`；发言记录存在浏览器 IndexedDB（库名 `UserMarkMessagesIDB`，Vencord 设置目录旁边那份），两者都不上传任何地方
 
 ## 桌面版自带记录（`vencord/UserMark/` 的新文件）
@@ -36,31 +36,18 @@ kettu/
 | `db.ts` | IndexedDB 封装：`getAllRecords` / `saveRecord`（覆盖，编辑用）/ `addRecords`（只写库里没有的，免得把 `DELETED` 洗回 `NORMAL`）/ `setStatus` / `deleteRecords` / `clearRecords` |
 | `capture.ts` | 订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`，只记名单里的人；删除只改状态不丢正文；回调里的错统一吞成日志 |
 | `backfill.ts` | 回溯当前频道（服务器走搜索接口、私聊读频道历史）、按 id 精确补「用来标记的那条」、按 `maxMarkedMessages` 裁剪 |
-| `MarkedMessagesModal.tsx` | 「标记发言」弹窗：名单带 + 发言列表 + 搜索/排序/拉取/清空，行可跳回原消息、复制内容、改备注、取消标记 |
+| `MarkedMessagesModal.tsx` | 「标记发言」弹窗：名单带 + 发言列表 + 搜索/排序/拉取/清空，行可跳回原消息、复制内容、改备注、取消标记；「用来标记的那条」挂「标记来源」标识，名单标签右键可直接跳到它 |
 | `HeaderButton.tsx` | 频道右上角那枚问号图标：补丁塞进 Discord 自己的 `HeaderBarIcon` 那一排，点开同一个弹窗 |
 
 设置里三个新开关：`logMarkedMessages`（存不存，默认开）、`maxMarkedMessages`（总条数上限，默认 2000，0 = 不限制）、`markedMessagesPerPage`（弹窗一屏多少条，默认 100）。
 
-## （可选）与日志插件的联动
+## 与日志插件的关系
 
-`vencord/message-logger-enhanced/` 里的文件来自对 [Syncxv/vc-message-logger-enhanced](https://github.com/Syncxv/vc-message-logger-enhanced) 的本地改动。**同名文件直接覆盖**即可，新文件按原路径放入：
+`vencord/message-logger-enhanced/` 里的文件来自对 [Syncxv/vc-message-logger-enhanced](https://github.com/Syncxv/vc-message-logger-enhanced) 的本地改动，**同名文件直接覆盖**即可。现在它只剩中文文案和几处观感修正（详见该目录的 `README.md`）。
 
-| 文件 | 改动 |
-| --- | --- |
-| `utils/markedUsers.ts` | 新增：读写 UserMark 名单（读 + `useMarkedMarks()` 订阅 + 改备注 / 取消标记） |
-| `utils/markedFetch.ts` | 新增：回溯当前频道发言，并按 id 精确回源「用来标记的那条」 |
-| `components/MarkedUsersStrip.tsx` | 新增：标签栏下的名单带（头像 + 当前频道名字/ID + 备注），右键可查看来源 / 修改标记 / 取消标记 |
-| `components/MarkNoteModal.tsx` | 新增：日志插件自带的备注编辑弹窗（不 import UserMark 的模块） |
-| `db.ts` | 新增 `NORMAL` 状态与两个标记查询 |
-| `components/hooks.ts` | 页签分流 |
-| `components/LogsModal.tsx` | 新增「标记用户发言」页签、名单带、拉取按钮；行右键加修改 / 取消标记 |
-| `index.tsx` | `MESSAGE_CREATE` 时把标记用户的发言入库 |
-| `settings.tsx` | 新增 `logMarkedUsers` 开关 |
-| `styles.css` | 名单带样式（走现役主题令牌，亮暗两侧都可读） |
+这里**曾经**给日志弹窗加过一整套 UserMark 的子页面——「标记用户发言」页签、名单带、行上的「标记来源」标识、行右键的修改 / 取消标记，加上 `utils/markedUsers.ts` / `utils/markedFetch.ts` / `components/MarkedUsersStrip.tsx` / `components/MarkNoteModal.tsx` 四个新文件和 `logMarkedUsers` 开关。2026-10-05 全删了：UserMark 自己的库和弹窗已经覆盖这些功能，而且不分状态、不用抢页签首页，两份实现只会让改一处得记两处。删除前对过账，两处真功能已经移植进 `MarkedMessagesModal.tsx`（「标记来源」标识、名单标签右键的「跳到标记来源」），其余都是重复。
 
-> 注意：这些文件里还带着本机的中文本地化改动，覆盖前先看一眼 diff。
-
-装完后日志弹窗会多出「标记用户发言」页签（在「幽灵提及」右边），自动按标记时间回溯当前频道，页脚有手动拉取按钮。这套和上面自带的记录是**两条独立的路**，同一条发言可能在两个库里各存一份；只想用一个的话，把日志插件的 `logMarkedUsers` 关掉就行，UserMark 不受影响。
+唯一留下的痕迹是 `db.ts` 里的 `DBMessageStatus.NORMAL` 枚举成员——旧版那个页签往日志库写过的记录还在用户硬盘上，现在没有页签会显示它们，`清空所有日志` 能清掉，成员留着是让类型还认得这批数据。
 
 ## 手机版（Kettu）
 
@@ -87,16 +74,17 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | --- | --- |
 | 桌面标记 / 徽标 / 名单面板 | 已验证 |
 | 桌面端离线自测 | 126 条断言全绿（settings 层 / 徽标+面板 / 菜单→弹窗→保存），桩在 `.Hanako\usermark-tests\vencord` |
-| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名对齐） | 离线 104 条断言全绿，桩在 `.Hanako\usermark-tests\standalone`；**弹窗真机待验证**（离线只验到类名与筛选，渲染要真 Discord） |
-| 桌面日志页签 / 当前频道回溯 / 名单带 | 已验证构建，真机行为待你确认 |
+| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名与观感对齐 / 日志插件解耦） | 离线 110 条断言全绿，桩在 `.Hanako\usermark-tests\standalone`；**弹窗真机待验证**（离线只验到类名、静态契约与筛选，渲染要真 Discord） |
+| 日志插件里的 UserMark 子页面 | 已删干净（页签 / 名单带 / 「标记来源」标识 / 行右键那两项 / `logMarkedUsers` / 四个新文件），功能全留在 UserMark 自己的弹窗里；离线桩会扫日志插件目录，重新长回来就红 |
+| 入口重复（右上角问号 + 输入框工具栏各一颗） | 已收成一处（输入框那颗和它依赖的 `ChatInputButtonAPI` 一起删了） |
+| 弹窗搜索框是浏览器默认的白框 | 已修（不再用 Discord 的 `TextInput`，自己写 input，背景走 `--input-background-default`，边框 / 文字 / placeholder 全用现役令牌） |
 | 备注弹窗点保存不关窗 | 已修（`onClose` + `closeAllModals` 双保险） |
 | 设置文件被探针抓的源码撑到 287KB | 已修（撤掉 `probe.ts`，启动时清掉遗留数据） |
 | `marks` 是坏数据时消息头 / 设置页整块崩 | 已修（读取统一兜底，克隆结果按存储对象身份缓存） |
 | 名单带只显示备注，暗色主题下几乎看不见 | 已修（改成头像 + 当前频道名字/ID + 备注；配色换到现役主题令牌，`--header-primary` 已被 Discord 移除，取不到值退成 `#111`） |
-| 名单带折叠 / 选中态没生效 | 已修（状态类得写整名 `msg-logger-marked-strip-collapsed`，`.strip.collapsed` 这种复合选择器被 `classNameFactory` 的前缀行为永远匹配不上） |
-| 名单带离线自测 | 61 条断言全绿（折叠阈值 / +N / 展开收起 / 名字回退链 / 点选 / 右键菜单 / 取消标记与改备注写回 / 类名与样式表对齐），桩在 `.Hanako\usermark-tests\strip` |
-| 点开日志弹窗整个 Discord 崩掉 | 已修（名单带曾在模块顶层快照 `waitForStore` 异步赋值的 store，拿到的是 undefined）；桩已改成会复现这个时序，重新引入会直接红 |
-| 「标记来源」标识看不到 | 已修（代码与数据都完好，问题是那条消息不在当前页签首页：弹窗一开就按 id 回源补一次，标签右键再加 `from:<人> message:<那条>` 直达） |
-| 来源标识不随名单变化刷新 | 已修（原来每行 `useMemo` 只依赖消息 id，等于挂载时拍一次快照；现在弹窗订阅名单，行从上面拿结果） |
-| 日志里改备注 / 取消标记 | 已加（名单标签右键 + 记录行右键，作者在被标记名单里才出现这两项） |
+| 名单带折叠 / 选中态没生效 | 已修（状态类得写整名 `.vc-usermark-strip-collapsed`，`.strip.collapsed` 这种复合选择器被 `classNameFactory` 的前缀行为永远匹配不上） |
+| 点开日志弹窗整个 Discord 崩掉 | 已修（名单带曾在模块顶层快照 `waitForStore` 异步赋值的 store，拿到的是 undefined）；同一个写法现在在 UserMark 的弹窗里，桩会复现这个时序，重新引入会直接红 |
+| 「标记来源」标识看不到 | 已修（代码与数据都完好，问题是那条消息不在列表首页：弹窗一开就按 id 回源补一次，名单标签右键再加「跳到标记来源」直达） |
+| 来源标识不随名单变化刷新 | 已修（弹窗用 `settings.use([ "marks" ])` 订阅名单，行从上面拿结果，不是挂载时拍快照） |
+| 改备注 / 取消标记 | 名单标签右键 + 记录行右键都有（原先日志弹窗里那份重复实现已删除） |
 | 手机版 | 无弹窗重制版已推送，离线 45 条断言全绿，**真机待验证** |

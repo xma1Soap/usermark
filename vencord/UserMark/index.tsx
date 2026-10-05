@@ -6,8 +6,7 @@
 
 import "./styles.css";
 
-import { addChatBarButton, ChatBarButton, removeChatBarButton } from "@api/ChatButtons";
-import { LogIcon, PencilIcon } from "@components/Icons";
+import { PencilIcon } from "@components/Icons";
 import definePlugin from "@utils/types";
 import { Channel, Message, User } from "@vencord/discord-types";
 import { Menu, showToast } from "@webpack/common";
@@ -15,7 +14,6 @@ import { Menu, showToast } from "@webpack/common";
 import { startCapture, stopCapture } from "./capture";
 import { registerDecorators, unregisterDecorators } from "./Decorations";
 import { addIconToToolBar } from "./HeaderButton";
-import { openMarkedMessagesModal } from "./MarkedMessagesModal";
 import { MarkTarget, openMarkModal } from "./MarkModal";
 import { getMark, purgeProbeLeftovers, removeMark, settings, sourceFromMessage } from "./settings";
 
@@ -67,9 +65,7 @@ export default definePlugin({
     enabledByDefault: true,
 
     settings,
-    // ChatInputButtonAPI 不是可选的：工具栏那颗图标靠它的补丁往里塞，
-    // 没声明依赖时插件不会被强制启用，图标就根本不出现（addChatBarButton 本身不报错，很容易看不出来）
-    dependencies: ["MessageDecorationsAPI", "MemberListDecoratorsAPI", "ChatInputButtonAPI"],
+    dependencies: ["MessageDecorationsAPI", "MemberListDecoratorsAPI"],
 
     patches: [
         {
@@ -89,22 +85,11 @@ export default definePlugin({
         registerDecorators();
         purgeProbeLeftovers();
         startCapture();
-
-        addChatBarButton(
-            "vc-usermark-logs",
-            () => (
-                <ChatBarButton tooltip="标记发言" onClick={openMarkedMessagesModal}>
-                    <LogIcon width={20} height={20} />
-                </ChatBarButton>
-            ),
-            LogIcon
-        );
     },
 
     stop() {
         unregisterDecorators();
         stopCapture();
-        removeChatBarButton("vc-usermark-logs");
     },
 
     contextMenus: {

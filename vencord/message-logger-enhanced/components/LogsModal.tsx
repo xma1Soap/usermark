@@ -15,19 +15,15 @@ import { closeAllModals, ModalContent, ModalFooter, ModalHeader, ModalProps, Mod
 import { LazyComponent } from "@utils/react";
 import type { Channel, User } from "@vencord/discord-types";
 import { find, findByCodeLazy } from "@webpack";
-import { Alerts, ChannelStore, ContextMenuApi, FluxDispatcher, Menu, NavigationRouter, React, showToast,TabBar, TextInput, Tooltip, useEffect, useMemo, useRef, UserStore, UserUtils, useState } from "@webpack/common";
+import { Alerts, ChannelStore, ContextMenuApi, FluxDispatcher, Menu, NavigationRouter, React, TabBar, TextInput, Tooltip, useEffect, useMemo, useRef, UserStore, UserUtils, useState } from "@webpack/common";
 
 import { DBMessageRecord, deleteMessageIDB, deleteMessagesBulkIDB } from "../db";
 import { settings } from "../index";
 import { LoggedMessage, LoggedMessageJSON } from "../types";
 import { messageJsonToMessageClass } from "../utils";
-import { fetchMarkedHistory, fetchMarkedSourceMessages } from "../utils/markedFetch";
-import { deleteMarkedUser, getMarkedMarks, useMarkedMarks } from "../utils/markedUsers";
 import { importLogs } from "../utils/settingsUtils";
 import { ClearLogsButton } from "./ClearLogsButton";
 import { useMessages } from "./hooks";
-import { MarkedUsersStrip } from "./MarkedUsersStrip";
-import { openMarkNoteModal } from "./MarkNoteModal";
 
 export interface MessagePreviewProps {
     className: string;
@@ -47,8 +43,7 @@ const cl = classNameFactory("msg-logger-modal-");
 export enum LogTabs {
     DELETED = "已删除",
     EDITED = "已编辑",
-    GHOST_PING = "幽灵提及",
-    MARKED = "标记用户发言"
+    GHOST_PING = "幽灵提及"
 }
 
 interface Props {
@@ -64,63 +59,6 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
     const contentRef = useRef<HTMLDivElement | null>(null);
 
     const { messages, total, statusTotal, pending, reset } = useMessages(queryEh, currentTab, sortNewest, numDisplayedMessages);
-
-    // 名单在弹窗开着的时候也会被改（右键取消标记），所以订阅变化而不是挂载时拍一次快照
-    const marks = useMarkedMarks();
-    const markSourceIds = useMemo(
-        () => new Set(Object.values(marks).map(m => m.sourceId).filter((id): id is string => Boolean(id))),
-        [marks]
-    );
-    const markedIds = useMemo(() => new Set(Object.keys(marks)), [marks]);
-
-    // 搜索框里带 from:<id> 就把对应标签高亮（「查看标记来源」会在后面再接 message:<id>，所以不锚结尾）
-    const activeMarkedId = useMemo(() => {
-        const match = /^(?:from|user):(\S+)/.exec(queryEh.trim());
-        return match?.[1] ?? null;
-    }, [queryEh]);
-
-    const [fetchingMarked, setFetchingMarked] = useState(false);
-    const autoFetchedRef = useRef(false);
-    const sourceFetchedRef = useRef(false);
-
-    // 「标记来源」那条必然早于标记时刻，页签一次只展示前 N 条，光靠频道回溯它经常挤不进第一页，
-    // 于是行都不在列表里，标识自然看不见。弹窗一开就按 id 精确补一次，不等切页签。
-    useEffect(() => {
-        if (sourceFetchedRef.current) return;
-        sourceFetchedRef.current = true;
-
-        fetchMarkedSourceMessages()
-            .then(added => added > 0 && reset())
-            .catch(() => { /* 补不到就用库里那份，标识顶多多等一次手动拉取 */ });
-    }, []);
-
-    const runMarkedFetch = async (force: boolean) => {
-        if (fetchingMarked) return;
-        setFetchingMarked(true);
-
-        try {
-            const result = await fetchMarkedHistory(force);
-            if (result.skipped) return;
-
-            if (result.added > 0) {
-                showToast(`在当前频道拉取到 ${result.added} 条标记用户消息`);
-                reset();
-            } else {
-                showToast("当前频道没有新的标记用户消息");
-            }
-        } catch (e) {
-            showToast("拉取标记用户消息失败");
-        } finally {
-            setFetchingMarked(false);
-        }
-    };
-
-    // 切到「标记用户发言」时自动回溯一次（60 秒内不重复）
-    useEffect(() => {
-        if (currentTab !== LogTabs.MARKED || autoFetchedRef.current) return;
-        autoFetchedRef.current = true;
-        void runMarkedFetch(false);
-    }, [currentTab]);
 
     return (
         <ModalRoot className={cl("root")} {...modalProps} size={ModalSize.LARGE}>
@@ -156,34 +94,7 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                     >
                         幽灵提及
                     </TabBar.Item>
-                    <TabBar.Item
-                        className={cl("tab-bar-item")}
-                        id={LogTabs.MARKED}
-                    >
-                        标记用户发言
-                    </TabBar.Item>
                 </TabBar>
-                <MarkedUsersStrip
-                    activeUserId={activeMarkedId}
-                    onMarksChanged={reset}
-                    onViewSource={(userId, sourceId) => {
-                        // message:<id> 走全量扫描再过滤，不受一次只显示 N 条的限制
-                        setQuery(`from:${userId} message:${sourceId}`);
-                        setCurrentTab(LogTabs.MARKED);
-                        fetchMarkedSourceMessages()
-                            .then(added => added > 0 && reset())
-                            .catch(() => { /* 拉不到就是库里真没有，列表给个空结果 */ });
-                    }}
-                    onPick={userId => {
-                        if (!userId) {
-                            setQuery("");
-                            return;
-                        }
-                        // 点标签 = 只看这个人，且切到按标记时间过滤的页签
-                        setQuery(`from:${userId}`);
-                        setCurrentTab(LogTabs.MARKED);
-                    }}
-                />
             </ModalHeader>
             <div style={{ opacity: modalProps.transitionState === 1 ? "1" : "0" }} className={cl("content-container")} ref={contentRef}>
                 {
@@ -205,8 +116,6 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                                 tab={currentTab}
                                 sortNewest={sortNewest}
                                 reset={reset}
-                                markSourceIds={markSourceIds}
-                                markedIds={markedIds}
                                 handleLoadMore={() => setNumDisplayedMessages(e => e + settings.store.messagesToDisplayAtOnceInLogs)}
                             />
                         )}
@@ -214,15 +123,6 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                 }
             </div>
             <ModalFooter className={cl("footer")}>
-                {currentTab === LogTabs.MARKED && (
-                    <Button
-                        variant="secondary"
-                        disabled={fetchingMarked}
-                        onClick={() => runMarkedFetch(true)}
-                    >
-                        {fetchingMarked ? "拉取中…" : "拉取本频道标记发言"}
-                    </Button>
-                )}
                 <ClearLogsButton label="清空所有日志" onCleared={reset} />
                 <Button
                     variant="dangerSecondary"
@@ -266,14 +166,10 @@ interface LogContentProps {
     visibleMessages: DBMessageRecord[];
     canLoadMore: boolean;
     reset: () => void;
-    /** 各人被标记时用的那条消息 id，命中的行挂「标记来源」标识 */
-    markSourceIds: Set<string>;
-    /** 被标记名单，决定行右键菜单给不给「修改标记 / 取消标记」 */
-    markedIds: Set<string>;
     handleLoadMore: () => void;
 }
 
-function LogsContent({ visibleMessages, canLoadMore, sortNewest, tab, reset, markSourceIds, markedIds, handleLoadMore }: LogContentProps) {
+function LogsContent({ visibleMessages, canLoadMore, sortNewest, tab, reset, handleLoadMore }: LogContentProps) {
     if (visibleMessages.length === 0)
         return <NoResults tab={tab} />;
 
@@ -285,8 +181,6 @@ function LogsContent({ visibleMessages, canLoadMore, sortNewest, tab, reset, mar
                         key={message.id}
                         log={{ message }}
                         reset={reset}
-                        isMarkSource={markSourceIds.has(message.id)}
-                        isMarked={markedIds.has(message.author?.id)}
                         isGroupStart={isGroupStart(message, visibleMessages[i - 1]?.message, sortNewest)}
                     />
                 ))}
@@ -314,9 +208,7 @@ function NoResults({ tab }: { tab: LogTabs; }) {
             case LogTabs.EDITED:
                 return { nextTab: LogTabs.GHOST_PING, lastTab: LogTabs.DELETED };
             case LogTabs.GHOST_PING:
-                return { nextTab: LogTabs.MARKED, lastTab: LogTabs.EDITED };
-            case LogTabs.MARKED:
-                return { nextTab: LogTabs.DELETED, lastTab: LogTabs.GHOST_PING };
+                return { nextTab: LogTabs.DELETED, lastTab: LogTabs.EDITED };
             default:
                 return { nextTab: "", lastTab: "" };
         }
@@ -374,15 +266,11 @@ interface LMessageProps {
     log: { message: LoggedMessageJSON; };
     isGroupStart: boolean,
     reset: () => void;
-    /** 这条就是某人被标记时用的那条消息 */
-    isMarkSource: boolean;
-    /** 作者在被标记名单里 */
-    isMarked: boolean;
 }
 /** 正在按 id补人的名单，防止同一条消息反复发请求 */
 const pendingAuthorFetches = new Set<string>();
 
-function LMessage({ log, isGroupStart, reset, isMarkSource, isMarked, }: LMessageProps) {
+function LMessage({ log, isGroupStart, reset, }: LMessageProps) {
     const [, bumpAuthor] = useState(0);
     const message = useMemo(() => messageJsonToMessageClass(log), [log]);
 
@@ -412,7 +300,6 @@ function LMessage({ log, isGroupStart, reset, isMarkSource, isMarked, }: LMessag
 
     return (
         <div
-            className={isMarkSource ? "vc-usermark-source-msg" : undefined}
             onContextMenu={e => {
                 ContextMenuApi.openContextMenu(e, () =>
                     <Menu.Menu
@@ -480,34 +367,6 @@ function LMessage({ log, isGroupStart, reset, isMarkSource, isMarked, }: LMessag
                             )
                         }
 
-                        {isMarked && (
-                            <Menu.MenuItem
-                                key="usermark-edit"
-                                id="usermark-edit"
-                                label="修改标记"
-                                action={() => {
-                                    const info = getMarkedMarks()[message.author.id];
-                                    openMarkNoteModal({
-                                        id: message.author.id,
-                                        name: message.author.globalName || message.author.username,
-                                        note: info?.note ?? ""
-                                    });
-                                }}
-                            />
-                        )}
-
-                        {isMarked && (
-                            <Menu.MenuItem
-                                key="usermark-unmark"
-                                id="usermark-unmark"
-                                label="取消标记"
-                                color="danger"
-                                action={() => {
-                                    if (deleteMarkedUser(message.author.id)) reset();
-                                }}
-                            />
-                        )}
-
                         <Menu.MenuItem
                             key="delete-log"
                             id="delete-log"
@@ -521,9 +380,6 @@ function LMessage({ log, isGroupStart, reset, isMarkSource, isMarked, }: LMessag
                     </Menu.Menu>
                 );
             }}>
-            {isMarkSource && (
-                <div className="vc-usermark-source-tag">标记来源</div>
-            )}
             <MessagePreview
                 className={`${cl("msg-preview")} ${message.deleted ? "messagelogger-deleted" : ""}`}
                 author={message.author}
