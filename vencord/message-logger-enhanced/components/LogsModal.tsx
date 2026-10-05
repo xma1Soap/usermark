@@ -217,7 +217,6 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                 {currentTab === LogTabs.MARKED && (
                     <Button
                         variant="secondary"
-                        style={{ marginRight: "16px" }}
                         disabled={fetchingMarked}
                         onClick={() => runMarkedFetch(true)}
                     >
@@ -226,7 +225,6 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                 )}
                 <ClearLogsButton label="清空所有日志" onCleared={reset} />
                 <Button
-                    style={{ marginRight: "16px" }}
                     variant="dangerSecondary"
                     disabled={messages?.length === 0}
                     onClick={() => Alerts.show({
@@ -246,7 +244,6 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                     清除可见日志
                 </Button>
                 <Link
-                    style={{ marginRight: "1rem" }}
                     onClick={() => {
                         setSortNewest(e => {
                             const val = !e;

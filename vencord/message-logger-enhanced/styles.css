@@ -23,8 +23,10 @@
     flex-direction: column;
 }
 
+/* ModalFooter 是 row-reverse，个别按钮靠 marginRight 撑间距会撞在一起，统一用 gap */
 .msg-logger-modal-footer {
     align-items: center;
+    gap: 16px;
 }
 
 .msg-logger-modal-content-container {
