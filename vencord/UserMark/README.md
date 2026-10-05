@@ -14,6 +14,8 @@
 | Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑、删除，右上角有「查看标记发言」 |
 | 「标记发言」弹窗 | 名单带（每人一枚标签）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文。点一行跳回原消息，右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」 |
 
+工具栏那颗图标走 Vencord 的 `ChatButtons` API，它由内置插件 `ChatInputButtonAPI` 的补丁负责往里塞，所以这个 API 名字**必须写在 `dependencies` 里**：不声明的话 `addChatBarButton()` 一样跑得不声不响、不报错，但图标根本不会出现（`MessageDecorationsAPI` / `MemberListDecoratorsAPI` 同理）。
+
 ## 与 ShowMeYourName 的顺序
 
 徽标走 Vencord 的 `MessageDecorationsAPI` 槽位（`@api/MessageDecorations`），这个槽位在消息头里渲染在**作者名之后**；ShowMeYourName 是把自己的输出塞进作者名的 `children`，所以两者天然是「昵称在前、`[被标记]` 在后」的顺序，不需要额外做优先级控制。

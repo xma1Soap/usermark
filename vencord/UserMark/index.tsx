@@ -66,7 +66,9 @@ export default definePlugin({
     enabledByDefault: true,
 
     settings,
-    dependencies: ["MessageDecorationsAPI", "MemberListDecoratorsAPI"],
+    // ChatInputButtonAPI 不是可选的：工具栏那颗图标靠它的补丁往里塞，
+    // 没声明依赖时插件不会被强制启用，图标就根本不出现（addChatBarButton 本身不报错，很容易看不出来）
+    dependencies: ["MessageDecorationsAPI", "MemberListDecoratorsAPI", "ChatInputButtonAPI"],
 
     start() {
         registerDecorators();

@@ -25,7 +25,7 @@ kettu/
 ### 三个闸门
 
 1. `authorization: Bearer public` + 指纹头（OpenCode Zen 免密车道）——与本仓库无关，见下方说明
-2. 装饰槽位依赖 `MessageDecorationsAPI` / `MemberListDecoratorsAPI`，首次启用会提示需要重启
+2. 装饰槽位依赖 `MessageDecorationsAPI` / `MemberListDecoratorsAPI`，输入框工具栏那颗图标依赖 `ChatInputButtonAPI`，首次启用会提示需要重启
 3. 名单是纯本地数据，存在 `settings.json` 的 `plugins.UserMark.marks`；发言记录存在浏览器 IndexedDB（库名 `UserMarkMessagesIDB`，Vencord 设置目录旁边那份），两者都不上传任何地方
 
 ## 桌面版自带记录（`vencord/UserMark/` 的新文件）
