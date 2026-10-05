@@ -655,7 +655,7 @@
         }
     }
 
-    /** 记录行：点开就在下面摊出「复制 / 删除」，不借 Discord 的面板 */
+    /** 记录行：点开就在下面摊出「复制 / 删除」，改过几回就把每一版旧正文一并摊出来 */
     function renderLogRows(list, expandedId, setExpanded) {
         if (!list.length) {
             return [React.createElement(Forms.FormRow, {
@@ -676,11 +676,12 @@
             const preview = body ? (body.length > 40 ? body.slice(0, 40) + "…" : body) : "（无文字内容）";
             const when = rec.ts ? new Date(rec.ts).toLocaleTimeString() : "";
             const open = expandedId === rec.id;
+            const history = Array.isArray(rec.editHistory) ? rec.editHistory : [];
 
             out.push(React.createElement(Forms.FormRow, {
                 key: `${rec.id}_${rec.ts}`,
                 label: preview,
-                subtext: `${who} · ${STATUS_TEXT[rec.status] || "普通"} · ${when}${open ? " · 点收起" : ""}`,
+                subtext: `${who} · ${STATUS_TEXT[rec.status] || "普通"} · ${when}${history.length ? ` · 改前 ${history.length} 版` : ""}${open ? " · 点收起" : ""}`,
                 onPress: () => setExpanded(open ? null : rec.id),
             }));
 
@@ -691,6 +692,19 @@
                 subtext: body ? "" : "这条没有文字",
                 onPress: () => copyText(m.content || ""),
             }));
+
+            // 改之前的每一版单独一行，按从旧到新；点一下就把那一版复制走
+            for (let i = 0; i < history.length; i++) {
+                const old = String(history[i].content || "").replace(/\s+/g, " ").trim();
+                const oldPreview = old ? (old.length > 40 ? old.slice(0, 40) + "…" : old) : "（无文字内容）";
+                out.push(React.createElement(Forms.FormRow, {
+                    key: `${rec.id}_old_${i}`,
+                    label: oldPreview,
+                    subtext: `${history.length === 1 ? "原话" : `第 ${i + 1} 版`} · ${history[i].ts ? new Date(history[i].ts).toLocaleTimeString() : ""} · 点复制`,
+                    onPress: () => copyText(history[i].content || ""),
+                }));
+            }
+
             out.push(React.createElement(Forms.FormRow, {
                 key: `${rec.id}_del`,
                 label: "删除这条记录",

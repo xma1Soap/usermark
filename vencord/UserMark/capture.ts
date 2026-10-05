@@ -7,8 +7,8 @@
 import { Logger } from "@utils/Logger";
 import { FluxDispatcher, MessageStore } from "@webpack/common";
 
-import { addRecords, deleteRecords, getAllRecords, saveRecord, setStatus } from "./db";
-import { prunePlan, shouldCapture, toRecord } from "./records";
+import { addRecords, deleteRecords, getAllRecords, getRecord, saveRecord, setStatus } from "./db";
+import { prunePlan, shouldCapture, toRecord, withEditHistory } from "./records";
 import { getMarks, settings } from "./settings";
 
 const Flogger = new Logger("UserMark", "#eb459e");
@@ -55,7 +55,9 @@ async function handleMessageUpdate(payload: any): Promise<void> {
     const record = toRecord(message, "EDITED");
     if (!record) return;
 
-    await saveRecord(record);
+    // Discord 推过来的只有改完的那版，改之前说了什么此刻全世界只剩我们库里有：
+    // 先捞旧版排进队列再覆盖，漏了这一步，「防编辑」就只防得住当场盯着屏幕的那一次。
+    await saveRecord(withEditHistory(await getRecord(record.id), record));
 }
 
 async function handleMessageDelete(payload: any): Promise<void> {

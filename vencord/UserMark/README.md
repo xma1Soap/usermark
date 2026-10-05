@@ -12,7 +12,7 @@
 | 成员列表 | 名字后面挂 `[被标记]` 徽标（可在设置里关） |
 | 频道右上角 | 一排图标最左边多出一枚**问号**图标（tooltip「标记发言」），点开自己的记录弹窗 |
 | Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑、删除，右上角有「查看标记发言」 |
-| 「标记发言」弹窗 | 名单带（每人一枚**带头像**的标签，超过 6 人折叠，折叠时露的是**最新标记**的那几个）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文；被标记时「用来标记的那条」左边压一条竖杠、头上挂一枚「标记来源」标签。点一行跳回原消息（帖子 / 子区没加载过也跳得动），右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」，右键名单标签可「修改标记 / 跳到标记来源 / 取消标记」 |
+| 「标记发言」弹窗 | 名单带（每人一枚**带头像**的标签，超过 6 人折叠，折叠时露的是**最新标记**的那几个）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文；被标记时「用来标记的那条」左边压一条竖杠、头上挂一枚「标记来源」标签。点一行跳回原消息（帖子 / 子区没加载过也跳得动），右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」，右键名单标签可「修改标记 / 跳到标记来源 / 取消标记」；改过的行下方一枚「改前 N 版」，点开是每一版旧正文 |
 
 弹窗有两个入口（右上角问号、设置页名单面板的「查看标记发言」），都指向同一个 `openMarkedMessagesModal()`，全部不依赖日志插件。右上角那枚走 Discord 自己的 `HeaderBarIcon`（`findComponentByCodeLazy(".HEADER_BAR_BADGE_BOTTOM,", 'position:"bottom"')`），注入点是 `toolbar: … mobileToolbar: …` 那个组件的补丁，跟日志插件的按钮用的是同一处、各自插自己的调用（补丁里的 `$self` 按插件实例替换，不会互相盖）。
 
@@ -99,18 +99,36 @@ NavigationRouter.transitionTo(`/channels/${guildId || "@me"}/${channelId}/${mess
   "content": "正文，超 2000 字裁断",
   "status": "NORMAL | EDITED | DELETED",
   "attachments": ["文件名，最多 10 个"],
-  "embedCount": 0
+  "embedCount": 0,
+  "edits": [{ "content": "改之前的正文，从旧到新最多留 10 版", "at": 1790000000000 }]
 }
 ```
 
 四条链路，全都不碰日志插件：
 
-- **实时捕获**（`capture.ts`）：订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`。只落名单里的人、`type === 0`、非临时消息（`flags & 64`）、非 pending/failed。编辑走 `saveRecord` 覆盖（`MESSAGE_UPDATE` 也发给置顶和加表情，而且常常只带变化字段，所以以 `MessageStore.getMessage` 拿到的完整消息为准，且必须有 `edited_timestamp`）；删除**只把状态改成 `DELETED`**，正文留着——这才是要留档的东西。网关回调里抛出去的错误统一吞成日志，不然满屏报错。
+- **实时捕获**（`capture.ts`）：订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`。只落名单里的人、`type === 0`、非临时消息（`flags & 64`）、非 pending/failed。编辑事件先 `getRecord` 把库里那一版捞出来，用 `withEditHistory` 把它排进 `edits` 再覆盖（`MESSAGE_UPDATE` 也发给置顶和加表情，而且常常只带变化字段，所以以 `MessageStore.getMessage` 拿到的完整消息为准，且必须有 `edited_timestamp`；正文一模一样的就不排队，不然队列里全是重复）；删除**只把状态改成 `DELETED`**，正文和旧版队列都留着——这才是要留档的东西。网关回调里抛出去的错误统一吞成日志，不然满屏报错。
 - **回溯当前频道**（`backfill.ts`）：服务器频道走 `GET /guilds/{id}/messages/search?channel_id=&author_id=`，一人一页（25 条，最多 10 页）；私聊 / 群聊没有搜索接口，改读 `GET /channels/{id}/messages`（100 条，最多 4 页）再按名单过滤。请求间隔 250ms，撞 429 立即收手，自动拉取之间至少隔 60 秒，工具栏「拉取本频道」是强制的。
 - **标记来源那条**：弹窗一打开先按 `sourceMessage.id` + `channelId` 精确回源补一次。这条必然早于标记时刻，靠翻页经常挤不进首页，所以单独拉。
 - **裁剪**：`maxMarkedMessages` 是总条数上限，超了删最旧的。捕获侧每写 25 条才整库扫一次，别每条消息都读一遍库。
 
-写入分工：`addRecords` 只写库里还没有的（回溯会反复扫同一批消息，用 `put` 覆盖会把已知的 `DELETED` 洗回 `NORMAL`），`saveRecord` 才是无条件覆盖（编辑事件要盖掉旧内容）。
+写入分工：`addRecords` 只写库里还没有的（回溯会反复扫同一批消息，用 `put` 覆盖会把已知的 `DELETED` 洗回 `NORMAL`），`saveRecord` 才是无条件覆盖（编辑事件要盖掉旧内容——盖之前那一版已经被 `withEditHistory` 搬进 `edits` 了，盖掉的只是行面上那一份）。
+
+## 防删除 / 防编辑做到哪一步
+
+日志插件那两件事的做法是**改聊天界面本身**：截 `/messages` 的分块响应，把已删消息重新塞回 `MessageStore`，再补丁消息组件把 `deleted` / `editHistory` 换成自己的值，于是聊天里能看见「某人删掉的那句」和划掉的原文。UserMark **没有**照抄这套：
+
+- 它要截 Discord 内部的消息组件和分块响应，属于同一段补丁日志插件已经在打的地方，两边各打一份会互相吃掉匹配；
+- 它的前提是「什么都存」——要还原任意一条被删的消息，就得先记下所有消息，而 UserMark 刻意只盯被标记的人（名单外的一条都不存）。
+
+UserMark 的防删除 / 防编辑落在**自己的库和弹窗**里，这是它能独立成立的那一半：
+
+| 事件 | 库里留下什么 | 弹窗里怎么看 |
+| --- | --- | --- |
+| 删除 | 状态改成 `DELETED`，正文、附件名、旧版队列一个都不动 | 整行划掉、灰字，照样带「已删除」，行上的时间线照旧 |
+| 编辑 | 改之前那一版排进 `edits`（从旧到新，最多 10 版），`content` 换成最新 | 行下方一枚「改前 N 版」按钮，点开是每一版正文加它当时在网上的时间；只有一版时直接标「原话」 |
+| 搜索 | — | 关键词同时匹配当前正文和每一版旧的：改掉不等于没说过 |
+
+`edits` 只在实时捕获时才会攒起来——回溯（REST 翻历史）拿到的消息只有最新那一版，Discord 那边就不给旧版了。这一点跟聊天界面的还原能力是两回事，别指望库里的旧版能靠回溯补出来。
 
 两条回溯**必须串着发**：`fetchMarkedSourceMessages()` 在第一个 `await` 之前就把 `running` 置真，并排发（`Promise.all`）的话后跑的 `fetchCurrentChannel()` 会立刻撞上同一个闸门、被判成「正在跑」而整条跳过。真机表现就是弹窗开着却一条都没补进来，看着像「还是得靠日志插件」。
 
@@ -153,7 +171,7 @@ node build2.mjs entry2.mjs  # 徽标 + 名单面板（41 条）
 node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链（43 条）
 
 cd "C:\Users\11028\Documents\.Hanako\usermark-tests\modal"
-node build.mjs              # 「标记发言」弹窗整棵组件树（57 条）
+node build.mjs              # 「标记发言」弹窗整棵组件树（73 条）
 ```
 
 三行都该是 `失败 0 条`（42 / 41 / 43）。它把这几件事钉住了：
@@ -167,13 +185,14 @@ node build.mjs              # 「标记发言」弹窗整棵组件树（57 条�
 
 ```powershell
 cd "C:\Users\11028\Documents\.Hanako\usermark-tests\standalone"
-node build.mjs                 # 110 条，全绿才是 0 失败
+node build.mjs                 # 134 条，全绿才是 0 失败
 ```
 
 它用 `fake-idb.mjs` 顶掉 `indexedDB`（写入同样过 `structuredClone`，所以「把带 getter 的 flux Message 直接塞进库」在桩里也会像真机一样抛 DataCloneError），用 `stub-webpack.mjs` 顶掉 `RestAPI` / `FluxDispatcher` / 各种 store，然后跑真的 `records.ts` / `db.ts` / `capture.ts` / `backfill.ts`。钉住的是这几件事：
 
 - 名单外的人、临时消息、pending/失败消息、非 `type === 0` 的消息都不落库；关掉 `logMarkedMessages` 就一条都不记
 - 删除只改 `status`，正文留着；`addRecords` 不会把已知的 `DELETED` 洗回 `NORMAL`
+- 防编辑：改之前那版排进 `edits`（从旧到新）、正文没变的更新（置顶 / 加表情）不排、反复改只留最新 10 版且从最旧那头丢、旧版一起参与搜索
 - 回溯：服务器频道走搜索接口、私聊走频道历史；整页才翻页（第二页 `offset=25`）；撞 429 立即收手不再发请求，普通报错只断当前这个用户；标记来源那条会被补进来且不会重复拉
 - 超过 `maxMarkedMessages` 裁到最新的 N 条
 - 取消标记后那个人的记录立刻不再显示，但行还在库里（重新标记就回来）
@@ -189,6 +208,7 @@ node build.mjs                 # 110 条，全绿才是 0 失败
 - 跳转：帖子走 `/channels/900/c-thread/m1`、私聊走 `/channels/@me/c-dm/m2`，断言的是 `NavigationRouter.transitionTo` 收到的那一串
 - 行与标签的右键项齐全、取消标记真的写回设置、`ensureProfiles` 不重复发请求也不给空 id 发
 - 筛选与排序：搜索框、`channel:force`、`source,channel:auto` 的先后
+- 改过的行：默认只给一枚「改前 N 版」，点开摊出每一版旧正文和它当时在网上的时刻，只有一版时标「原话」；点展开会把事件挡住，不跟着整行跳转把窗关掉
 
 两套桩都撞过一个同一个坑：`@api/Styles` 在模块顶层就 `document.createElement`，`HeaderButton` / `MarkPanel` 又引用 `./MarkedMessagesModal`，于是 Node 里一编译就炸。解法是把弹窗在那个入口上桩掉（`stub-markedmodal.mjs`），`@webpack` 的 lazy 查找同样桩掉（`stub-webpack-lazy.mjs`，不桩会把真的 `src/webpack/common` 目录顺着相对导入拖进来，一路拽到 `document`）。
 
@@ -212,7 +232,8 @@ node build.mjs                 # 110 条，全绿才是 0 失败
 - `authors` 用的是占位 id `0n`，要显示你的 Discord 头像就把 `index.tsx` 里的 id 换成真实用户 ID。
 - 右键私聊列表里的会话本身给的是频道菜单（`channel-context`），要标记那个人得走他的消息或资料弹层。
 - 最新发言时间只覆盖插件启用之后、且消息实际渲染过的记录。
-- 本地库存的是**正文和附件文件名**，不存附件本体、不存 embed / 卡片的正文（只记数量）。编辑是覆盖式的：留最新正文加一个 `EDITED` 状态，不保留改之前的原文（要看编辑历史得用日志插件）。
+- 本地库存的是**正文和附件文件名**，不存附件本体、不存 embed / 卡片的正文（只记数量）。旧版正文只来自实时捕获：回溯（REST）拿到的消息只有最新那一版，改之前的内容 Discord 不再提供，所以插件启用之前就被改过的消息，库里只有最后一版。
+
 - 网关只推当前订阅的频道，弹窗里只回溯**当前打开的那个频道**。没打开过的服务器不会自己补，得先切过去再点「拉取本频道」。
 - 「取消标记」不会删那个人的历史发言，只是不再显示、也不再新增；要腾地方就点弹窗里的「清空记录」，或者靠 `maxMarkedMessages` 裁。
 

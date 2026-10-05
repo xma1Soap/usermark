@@ -64,6 +64,14 @@ export async function saveRecord(record: MarkedRecord): Promise<void> {
     await done(tx, "写入 UserMark 记录");
 }
 
+/** 读一条。编辑事件得先拿到库里那一版，才知道他改之前说的是啥 */
+export async function getRecord(id: string): Promise<MarkedRecord | undefined> {
+    const database = await openDb();
+    const tx = database.transaction(STORE, "readonly");
+
+    return request<MarkedRecord | undefined>(tx.objectStore(STORE).get(id), "读取单条 UserMark 记录");
+}
+
 /**
  * 只写库里还没有的，返回真正新增的条数。
  * 回溯会反复扫同一批消息，用 put 覆盖会把已知的 DELETED 状态洗回 NORMAL。

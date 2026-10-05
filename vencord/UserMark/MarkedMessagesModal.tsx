@@ -297,6 +297,8 @@ function Row({ record, note, snapshotName, isSource, onJump, onUnmark }: RowProp
     const avatarUrl = useAvatarUrl(record.authorId, guildId);
     const channelLabel = useChannelLabel(record.channelId);
     const statusLabel = STATUS_LABEL[record.status];
+    const [showEdits, setShowEdits] = useState(false);
+    const edits = record.edits ?? [];
 
     return (
         <div
@@ -327,6 +329,31 @@ function Row({ record, note, snapshotName, isSource, onJump, onUnmark }: RowProp
                 </div>
 
                 <div className={cl("row-content")}>{record.content || "（无文字内容）"}</div>
+
+                {edits.length > 0 && (
+                    <>
+                        <button
+                            type="button"
+                            className={cl("row-edits-toggle")}
+                            onClick={e => {
+                                // 点整行是跳转，展开旧版不能跟着把窗关掉
+                                e?.stopPropagation?.();
+                                setShowEdits(v => !v);
+                            }}
+                        >
+                            {showEdits ? "收起改前的内容" : `改前 ${edits.length} 版`}
+                        </button>
+
+                        {showEdits && edits.map((edit, index) => (
+                            <div key={`${record.id}-${index}`} className={cl("row-edit")}>
+                                <div className={cl("row-edit-label")}>
+                                    {(edits.length === 1 ? "原话" : `第 ${index + 1} 版`) + " · " + formatTimestamp(edit.at)}
+                                </div>
+                                <div className={cl("row-edit-content")}>{edit.content || "（无文字内容）"}</div>
+                            </div>
+                        ))}
+                    </>
+                )}
             </div>
         </div>
     );

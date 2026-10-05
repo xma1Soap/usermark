@@ -9,6 +9,15 @@ import { toMs } from "./utils";
 export type MarkedMessageStatus = "NORMAL" | "EDITED" | "DELETED";
 
 /**
+ * 改之前的某一遍正文。`at` 是这一版在网上的时间：
+ * 最初那版就是发言时间，后面每一版是它被改出来的那一刻（取自被覆盖记录的 editedTimestamp）。
+ */
+export interface EditSnapshot {
+    content: string;
+    at: number | null;
+}
+
+/**
  * 本地库里的一条发言。刻意只留展示要用的字段：
  * 网关消息在 flux 里是 Message 类实例，带 getter，整份塞进 IndexedDB
  * 要么结构化克隆炸掉，要么存进去一堆没用的东西。
@@ -26,6 +35,12 @@ export interface MarkedRecord {
     /** 附件文件名，只用来提示「有 N 个附件」 */
     attachments: string[];
     embedCount: number;
+    /**
+     * 改过的正文按**从旧到新**排在 `content` 前面，`content` 永远是最新那一版。
+     * Discord 的 MESSAGE_UPDATE 只给改完的结果，改之前那版只有我们自己存着，
+     * 所以这一列必须在覆盖之前从旧记录里搬过来（见 withEditHistory）。
+     */
+    edits?: EditSnapshot[];
 }
 
 export interface SelectOptions {
@@ -82,6 +97,28 @@ export function toRecord(message: any, status: MarkedMessageStatus = "NORMAL"): 
     };
 }
 
+/** 一条消息最多留多少版旧正文，免得有人反复改把库撑爆 */
+const EDIT_HISTORY_LIMIT = 10;
+
+/**
+ * 把编辑事件要覆盖的那一条折进旧正文里。
+ *
+ * `previous` 是库里已有的那版（可能没有：编辑先于捕获到达成，或那条压根没记过）。
+ * 正文没变就不排队——置顶、加表情回应这些也会带 edited_timestamp 发更新，
+ * 排进去就是一串一模一样的旧版。
+ */
+export function withEditHistory(previous: MarkedRecord | null | undefined, next: MarkedRecord): MarkedRecord {
+    const edits = previous?.edits ? [...previous.edits] : [];
+
+    if (previous && previous.content !== next.content) {
+        edits.push({ content: previous.content, at: previous.editedTimestamp ?? previous.timestamp });
+    }
+
+    if (edits.length > EDIT_HISTORY_LIMIT) edits.splice(0, edits.length - EDIT_HISTORY_LIMIT);
+
+    return edits.length > 0 ? { ...next, edits } : next;
+}
+
 /** 这条消息该不该记：作者在名单里、不是 ephemeral、不是系统消息、不是自己发失败的 */
 export function shouldCapture(message: any, marks: Record<string, unknown>): boolean {
     const authorId = message?.author?.id;
@@ -94,6 +131,13 @@ export function shouldCapture(message: any, marks: Record<string, unknown>): boo
     return true;
 }
 
+/** 搜索用的文本：当前正文加上每一版旧的，改之前的话也要搜得着 */
+function searchable(record: MarkedRecord): string {
+    if (!record.edits?.length) return record.content.toLowerCase();
+
+    return [record.content, ...record.edits.map(edit => edit.content)].join("\n").toLowerCase();
+}
+
 /** 取查询要展示的那一页；排序和过滤都放在内存里做，量级由 maxMarkedMessages 兜住 */
 export function selectRecords(all: MarkedRecord[], opts: SelectOptions): MarkedRecord[] {
     const { marks, authorId = null, query = "", newest = true, limit = 100 } = opts;
@@ -103,7 +147,8 @@ export function selectRecords(all: MarkedRecord[], opts: SelectOptions): MarkedR
     const rows = all.filter(record => {
         if (!record || !(record.authorId in marks)) return false;
         if (authorId && record.authorId !== authorId) return false;
-        if (needle && !record.content.toLowerCase().includes(needle)) return false;
+        // 旧正文也算命中：改掉了不等于没说过，搜的就是「他说过的任何一版」
+        if (needle && !searchable(record).includes(needle)) return false;
         return true;
     });
 

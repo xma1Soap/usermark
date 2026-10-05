@@ -32,8 +32,8 @@ kettu/
 
 | 文件 | 作用 |
 | --- | --- |
-| `records.ts` | 纯逻辑：把网关消息拍成一条 `MarkedRecord`、判断该不该记、按名单/作者/关键词筛选、算超限该删哪些 |
-| `db.ts` | IndexedDB 封装：`getAllRecords` / `saveRecord`（覆盖，编辑用）/ `addRecords`（只写库里没有的，免得把 `DELETED` 洗回 `NORMAL`）/ `setStatus` / `deleteRecords` / `clearRecords` |
+| `records.ts` | 纯逻辑：把网关消息拍成一条 `MarkedRecord`、判断该不该记、按名单/作者/关键词筛选（旧版正文一起搜）、算超限该删哪些、`withEditHistory` 把改之前那版排进 `edits` |
+| `db.ts` | IndexedDB 封装：`getAllRecords` / `getRecord`（编辑前先把旧版捞出来）/ `saveRecord`（覆盖，编辑用）/ `addRecords`（只写库里没有的，免得把 `DELETED` 洗回 `NORMAL`）/ `setStatus` / `deleteRecords` / `clearRecords` |
 | `capture.ts` | 订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`，只记名单里的人；删除只改状态不丢正文；回调里的错统一吞成日志 |
 | `backfill.ts` | 回溯当前频道（服务器走搜索接口、私聊读频道历史）、按 id 精确补「用来标记的那条」、按 `maxMarkedMessages` 裁剪 |
 | `MarkedMessagesModal.tsx` | 「标记发言」弹窗：名单带 + 发言列表 + 搜索/排序/拉取/清空，行可跳回原消息、复制内容、改备注、取消标记；「用来标记的那条」挂「标记来源」标识，名单标签右键可直接跳到它 |
@@ -56,7 +56,7 @@ kettu/
 
 - 长按一条消息 → 「标记此用户」→ **当场打上标记**，去设置页里写备注（设置页会自动把那个人的编辑框摊开）
 - 已标记的人 → 「编辑标记备注」/「取消标记」
-- 设置页出名单面板，备注就地改，发言记录就地复制/删除
+- 设置页出名单面板，备注就地改，发言记录就地复制/删除；改过的记录摊开能看到改之前的每一版，点那一版就把那一版复制走
 - **全程零弹窗**：Kettu 的 `ui.alerts` 走的是 Discord 已经删掉的 `FluxContainer(Alert)`，弹一次就把插件炸掉，所以输入框、确认全部改成设置页里的行内控件
 
 装法（插件是按 URL 拉的，所以要能被 HTTP 访问）：
@@ -75,8 +75,8 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | --- | --- |
 | 桌面标记 / 徽标 / 名单面板 | 已验证 |
 | 桌面端离线自测 | 126 条断言全绿（settings 层 / 徽标+面板 / 菜单→弹窗→保存），桩在 `.Hanako\usermark-tests\vencord` |
-| 弹窗离线自测 | 57 条断言全绿（折叠露最新 6 人 / 头像与名字兜底链 / 跨帖子跳转的路由串 / 两处右键 / 补档不重复发请求 / 筛选排序），桩在 `.Hanako\usermark-tests\modal`；**配色与头像圈描边还得真机看** |
-| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名与观感对齐 / 日志插件解耦） | 离线 110 条断言全绿，桩在 `.Hanako\usermark-tests\standalone` |
+| 弹窗离线自测 | 73 条断言全绿（折叠露最新 6 人 / 头像与名字兜底链 / 跨帖子跳转的路由串 / 两处右键 / 补档不重复发请求 / 筛选排序 / 改前版本展开收起），桩在 `.Hanako\usermark-tests\modal`；**配色与头像圈描边还得真机看** |
+| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名与观感对齐 / 日志插件解耦 / 防编辑排队） | 离线 134 条断言全绿，桩在 `.Hanako\usermark-tests\standalone` |
 | 日志插件里的 UserMark 子页面 | 已删干净（页签 / 名单带 / 「标记来源」标识 / 行右键那两项 / `logMarkedUsers` / 四个新文件），功能全留在 UserMark 自己的弹窗里；离线桩会扫日志插件目录，重新长回来就红 |
 | 入口重复（右上角问号 + 输入框工具栏各一颗） | 已收成一处（输入框那颗和它依赖的 `ChatInputButtonAPI` 一起删了） |
 | 弹窗搜索框是浏览器默认的白框 | 已修（不再用 Discord 的 `TextInput`，自己写 input，背景走 `--input-background-default`，边框 / 文字 / placeholder 全用现役令牌） |
@@ -91,5 +91,6 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | 名单带和发言行没有头像、名字是一串雪花 | 已修（`UserStore.getUser()` 只认已缓存的用户，名单里没缓存的人以前就只剩 ID。新增 `profiles.ts` 按需补档案，名字走完整兜底链、头像缺缓存时手拼 CDN 地址，动图认 `a_` 前缀；补不到就退到标记时的快照名，不画空头像圈） |
 | 折叠露出来的是最旧的 6 个人 | 已修（名单是插入序，折叠前按 `markedAt` 倒序，刚标记的人不会再藏在折叠线后面） |
 | 「跳到原消息」只有停在那条消息所在的子区 / 帖子才跳得动 | 已修（改用 Discord 自己的消息链接路由 `NavigationRouter.transitionTo("/channels/{ guild }/{ channel }/{ message }")`，认不出的频道它自己拉；`guildId` 直接取记录里存的那个，不再猜 `@me`） |
+| 防删除 / 防编辑（日志插件那两件事） | 融进了自己的库和弹窗：删除只改状态、正文和旧版都留着；编辑会把改之前那版排进 `edits`，弹窗一行一枚「改前 N 版」点开看每一版的正文和时刻，搜索连旧版一起搜。**没有**照抄日志插件那套「改聊天界面本身」的补丁（要截 Discord 内部的消息组件和分块响应，跟日志插件打在同一段代码上会互相吃掉匹配，而且那套的前提是记全部消息，这里刻意只盯名单里的人） |
 | 改备注 / 取消标记 | 名单标签右键 + 记录行右键都有（原先日志弹窗里那份重复实现已删除） |
-| 手机版 | 无弹窗重制版已推送，离线 45 条断言全绿，**真机待验证** |
+| 手机版 | 无弹窗重制版已推送，离线 56 条断言全绿，**真机待验证** |

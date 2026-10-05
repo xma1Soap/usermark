@@ -270,3 +270,34 @@
     overflow-wrap: anywhere;
 }
 
+/* 改前的每一版：左边一条竖杠 + 更暗的字色，跟最新那版一眼分开 */
+.vc-usermark-row-edits-toggle {
+    align-self: flex-start;
+    padding: 1px 8px;
+    border: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.32));
+    border-radius: 10px;
+    background: transparent;
+    color: var(--text-default, #fff) !important;
+    font-size: 11px;
+    line-height: 15px;
+    cursor: pointer;
+}
+
+.vc-usermark-row-edit {
+    padding-left: 6px;
+    border-left: 2px solid var(--border-subtle, rgba(128, 128, 128, 0.32));
+}
+
+.vc-usermark-row-edit-label {
+    color: var(--text-muted);
+    font-size: 11px;
+}
+
+.vc-usermark-row-edit-content {
+    color: var(--text-muted, rgba(255, 255, 255, 0.5));
+    font-size: 12px;
+    line-height: 1.35;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+
