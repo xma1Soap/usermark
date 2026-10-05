@@ -9,6 +9,7 @@
 - **设置页 → 插件 → UserMark** → 名单面板：备注为主标题，用户名和标记时间为副标题，点一行出「编辑备注 / 取消标记」
 - **设置页 → 标记用户发言**：只记名单内用户的收到/编辑/删除（存 MMKV，可设上限、可清空）
 - 长按菜单万一挂不上：**设置页 → 按 ID 标记**照样能用（输入 `用户ID 备注`）
+- 弹窗被早期版本弄崩了：**设置页 → 修复：清空模块缓存并重启**（见下面「踩过的两个坑」）
 
 ## 装法
 
@@ -30,7 +31,8 @@ Kettu 会自己拼 `manifest.json` 和 `index.js`。
 | 桌面版（Vencord） | 移动版（Kettu） |
 | --- | --- |
 | `contextMenus["message"]` | `patcher.before("openLazy", findByProps("openLazy","hideActionSheet"))`：从调用参数认出消息长按面板（key 含 `LongPress`、props 里带 `message`） |
-| 菜单项注入 | 面板是 `openLazy(promise, key, props)` 懒加载的，所以 `promise.then(mod => patcher.after("default", mod, cb))`，从 `cb` 拿到的渲染树里按**形状**找行数组（`Array` 且元素带 `props.onPress`），往里 push `ActionSheetRow` |
+| 菜单项注入 | 面板是 `openLazy(promise, key, props)` 懒加载的，所以 `promise.then(mod => patcher.after("default", mod, cb))`，从 `cb` 拿到的渲染树里按**形状**找行数组（`Array` 且元素带 `props.onPress`），往里 push 行 |
+| 行用什么组件渲染 | 直接抄面板里现成那行的 `type`，连文字 prop 叫什么（`label`/`text`/`title`）一起抄——这样一次 metro 查询都不发。抄不到才回退 `findByProps("ActionSheetRow")`，且整个会话只查一次 |
 | 每次渲染重新判定 | 行里给谁标记，取**本次渲染 props 的 message**，不取当初 openLazy 的闭包；重复渲染靠行上的 `__usermarkRow` 标记去重 |
 | `openModal` 输入框 | `ui.alerts.showInputAlert` |
 | `definePluginSettings` 落盘 | `plugin.storage`（MMKV 响应式代理），读写一律 JSON 往返保证纯对象 |
@@ -40,8 +42,13 @@ Kettu 会自己拼 `manifest.json` 和 `index.js`。
 
 ## 踩过的两个坑（改这块代码前先看）
 
-1. **别用「永不命中」的 filter 去全量扫模块。** `vendetta.metro.find(cb)` 的 filter 返回值会被 Kettu 按调用点哈希建索引，并且**落盘缓存**。一次永不命中的全扫 → 该索引被标成 `NOT_FOUND` → 以后每次同种查找直接返回空；更糟的是扫描会强制初始化所有模块，抛错的模块被永久拉黑（`Object.defineProperty(..., {enumerable:false})`）。表现就是「长按菜单死活注不进去」加上「所有弹窗崩在 `bunny.metro.byDisplayName(FluxContainer(Alert)) is undefined`」，而且**重启、重装插件都不会自愈**。
-   如果装机后弹窗开始崩，删掉 Kettu 数据目录里的 `caches/metro_modules.json` 再重启（下次启动会重建）。
+1. **别发「查不到」的 metro 查询，尤其别在热路径里重复发。** 一次未命中的 `findByProps` / 永不命中的 `find(cb)` 会做两件事，两件都落盘到 `caches/metro_modules.json`：
+   - 扫描会把所有**还没初始化**的模块强制 `require` 一遍。抛错的那个 id 被 `blacklistModule()` 置为非枚举 + 写进 `flagsIndex`。Kettu 启动时（`src/metro/internals/modules.ts` 开头那个循环）照着文件把黑名单原样套回来，于是它从此不在 `for (const id in metroModules)` 里 —— **按名字/属性找它就再也找不到了**。
+   - 同一次未命中还会把这条查询的 uniq 标成 `_NOT_FOUND`（`findIndex`），之后同种查找直接返回空。
+
+   表现就是「弹窗一开就崩」，报 `bunny.metro.byDisplayName(FluxContainer(Alert)) is undefined! (id unknown)`（这串文本来自 `src/metro/lazy.ts` 的 `forceLoad`），而且**重启、重装插件都不自愈**——旧版本在 `onLoad` 里全量扫描时就踩过这个。
+
+   自救：**设置页 → UserMark → 「修复：清空模块缓存并重启」**（两下确认）。它删掉 `caches/metro_modules.json` 再叫 `BundleUpdaterManager.reload()`，下次启动 Kettu 自己重建一份干净的。删两次是必须的：Kettu 的 `saveCache` 是 1 秒防抖，只删一次会被内存里的旧缓存写回来。不想用按钮的话，手动删 `<Discord 文档目录>/pyoncord/caches/metro_modules.json` 也行（各分支前缀可能是 `pyoncord/` `bunny/` `kettu/`），删完**要先彻底关闭进程**再打开，否则又写回来。
 2. **`patcher` 是 Proxy 包装，不是换函数。** spitroast 往模块上装的是 `new Proxy(origFunc, {...})`，`name`/`displayName`/自定义属性都还是原函数的，unpatch 时精确还原原引用。所以「补组件 default 会截断 Kettu 按名字找组件的链」这个担心是多余的——真正会截断的是自己写 `mod.default = function 包装(){}`。
 
 ## 已验证 / 未验证
@@ -54,11 +61,14 @@ Kettu 会自己拼 `manifest.json` 和 `index.js`。
 - 面板重复渲染不会堆出重复行；非消息面板（如头像长按）不会被误补
 - 补丁装在上面那种壳模块（渲染树里没行）时，下一次长按会自动再补一个模块（上限 2）
 - `unpatch` 后模块 `default` 与 `openLazy` 都还原为原引用；`displayName` 全程可被 `byDisplayName` 找到
+- 面板自己带行组件时**一次 metro 查询都不发**；面板只给字符串 type 时才回退查 `ActionSheetRow`，且连渲 4 次也只查 1 次
+- 修复按钮：第一下只落在确认文案上（不碰文件），第二下才删缓存 + 调 `reload`，删除前会先用 `fileExists` 认出真实前缀目录
 
 **未验证（需要真机）：**
 
 - 你当前 Discord 版本的消息长按面板 key 是否还叫 `MessageLongPressActionSheet`、props 里是否直接给 `message`。装好后设置页「跑一次菜单定位诊断」会把**最近打开过的面板 key 和 props 属性名**列出来——不出现标记项时那几行就是定位依据
-- 行样式（`ActionSheetRow` 只有 `label` 没有图标）在面板里的观感
+- 行样式（抄的是面板里现成那行的组件，只给文字不给图标）在面板里的观感
+- 真机上 `pyoncord/caches/metro_modules.json` 的实际前缀目录名（代码里 `pyoncord/ bunny/ kettu/` 都试）
 
 ## 暂时没做的
 

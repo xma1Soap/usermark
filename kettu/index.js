@@ -124,8 +124,9 @@
        消息长按走 openLazy(promise, "MessageLongPressActionSheet", { message, … })。
        先只读 openLazy 的参数认出是哪个面板，再把那个模块的 default 补一层，
        从渲染结果里按形状找到行数组，往里 push 我们的项。
-       patcher 是 Proxy 包装，不改组件自身的 name/displayName，所以不会截断
-       Kettu 按名字找组件的链路（旧版把组件整个换掉过，代价是所有弹窗崩）。 */
+       patcher 是 Proxy 包装，不改组件自身的 name/displayName，所以按名字找组件不受影响。
+       真正会弄坏弹窗的是「查不到的 metro 查询」：它等于全量扫描并强制 require 所有还没
+       初始化的模块，require 抛错的模块被永久拉黑写进磁盘缓存，见下面「缓存中毒自救」。 */
 
     const MARK_FLAG = "__usermarkRow";
 
@@ -137,6 +138,7 @@
         rows: 0,
         lastError: "",
         openLazyPatched: false,
+        rowComp: "",
     };
 
     /** 已经补过 default 的面板模块，避免同一次长按重复装 */
@@ -181,17 +183,49 @@
         return walk(root, 0);
     }
 
+    let rowComp = null;      // 缓存住的行组件：整个会话最多只查一次
+    let rowCompTried = false;
+
     /**
-     * 行组件延迟到真正要出行时才查。
-     * 面板所在的 chunk 可能还没加载 —— 这时候 findByProps 找不到，Kettu 会把
-     * 这个查询永久标记成「没有」并写进磁盘缓存，之后再怎么找都是空。
+     * 兜底用的行组件。延迟到真要出行时才查，而且只查一次：
+     * findByProps 落空会强制 require 所有还没初始化的模块，抛错的那些直接被永久拉黑，
+     * 下一次长按又问一遍的话，黑名单只会越滚越长。
      */
     function getRowComp() {
+        if (rowCompTried) return rowComp;
+        rowCompTried = true;
         try {
             const m = metro.findByProps("ActionSheetRow");
-            if (m && m.ActionSheetRow) return m.ActionSheetRow;
+            if (m && m.ActionSheetRow) {
+                rowComp = m.ActionSheetRow;
+                sheetTrace.rowComp = "ActionSheetRow";
+            }
         } catch { /* 换降级 */ }
-        return Forms.FormRow;
+        if (!rowComp) {
+            rowComp = Forms.FormRow;
+            sheetTrace.rowComp = sheetTrace.rowComp || "FormRow（降级）";
+        }
+        return rowComp;
+    }
+
+    /**
+     * 优先借用面板里现成的行组件：它就是 Discord 这一版真正在渲染行的那个，
+     * 连文字 prop 叫什么都能一起抄，还能省掉一次 metro 查询。
+     */
+    function pickRow(rows) {
+        const sample = rows.find(r => r && r.props && typeof r.props.onPress === "function");
+        const type = sample && sample.type;
+        if (typeof type !== "function" && (typeof type !== "object" || !type)) return { Comp: getRowComp(), labelProp: "label" };
+
+        let labelProp = "label";
+        for (const k of ["label", "text", "title"]) {
+            if (typeof sample.props[k] === "string") {
+                labelProp = k;
+                break;
+            }
+        }
+        if (!sheetTrace.rowComp) sheetTrace.rowComp = `面板自带（文字 prop=${labelProp}）`;
+        return { Comp: type, labelProp };
     }
 
     /** 往行数组尾部加「标记此用户 / 取消标记」 */
@@ -200,11 +234,13 @@
         if (!author || !author.id) return false;
         if (rows.some(r => r && r.props && r.props[MARK_FLAG])) return false;
 
-        const Row = getRowComp();
+        const picked = pickRow(rows);
+        const Row = picked.Comp;
+        const labelProp = picked.labelProp;
         const existing = getMark(author.id);
         const makeRow = (key, label, onPress) => React.createElement(Row, {
             key,
-            label,
+            [labelProp]: label,
             onPress,
             [MARK_FLAG]: true,
         });
@@ -481,13 +517,9 @@
     function runDiag() {
         const report = [];
 
-        for (const p of ["openLazy", "ActionSheetRow", "showSimpleActionSheet"]) {
-            try {
-                report.push(`${p}=${metro.findByProps(p) ? "有" : "无"}`);
-            } catch {
-                report.push(`${p}=错`);
-            }
-        }
+        // 这里刻意不做额外的 findByProps 探测：查不到的探测 = 全量强制 require，
+        // 正是把模块拉黑、弄坏所有弹窗的那个动作。
+        report.push(`行组件=${sheetTrace.rowComp || "还没出行（长按一次消息后才有）"}`);
 
         if (!sheetTrace.openLazyPatched) {
             try {
@@ -631,14 +663,97 @@
         });
     }
 
+    /* ================= 缓存中毒自救 =================
+       症状：一开弹窗就炸，报 bunny.metro.byDisplayName(FluxContainer(Alert)) is undefined!
+       原因：一次「查不到的 metro 查询」会强制 require 所有还没初始化的模块，抛错的那些
+             被 blacklistModule 变成非枚举，并写进 caches/metro_modules.json 的 flagsIndex。
+             Kettu 启动时（internals/modules.ts）照着文件把黑名单原样套回来，所以重启也不会
+             自己好；那次查询还顺手把它的 uniq 标成 _NOT_FOUND，之后每次都直接返回空。
+       自救：删掉那个文件再重载 JS —— initMetroCache 发现文件不在就重建一份干净的。 */
+
+    const METRO_CACHE_REL = "caches/metro_modules.json";
+    // 各分支的目录前缀不统一，逐个试
+    const CACHE_PREFIXES = ["pyoncord/", "bunny/", "kettu/", ""];
+
+    function getNativeModule(name) {
+        try {
+            if (globalThis.__turboModuleProxy) {
+                const m = globalThis.__turboModuleProxy(name);
+                if (m) return m;
+            }
+        } catch { /* 换下一条 */ }
+        try {
+            const nmp = window.nativeModuleProxy;
+            if (nmp && nmp[name]) return nmp[name];
+        } catch { /* 没有 */ }
+        return null;
+    }
+
+    /** 删掉能找到的那份缓存，返回删掉的相对路径 */
+    async function deleteMetroCache() {
+        const fm = getNativeModule("NativeFileModule") || getNativeModule("RTNFileManager") || getNativeModule("DCDFileManager");
+        if (!fm || typeof fm.removeFile !== "function") {
+            throw new Error(`没找到文件模块，请手动删 ${METRO_CACHE_REL}`);
+        }
+
+        let docs = "";
+        try { docs = fm.getConstants().DocumentsDirPath; } catch { /* 那就盲删 */ }
+
+        const removed = [];
+        for (const prefix of CACHE_PREFIXES) {
+            const rel = `${prefix}${METRO_CACHE_REL}`;
+            if (docs && typeof fm.fileExists === "function") {
+                let exists = false;
+                try { exists = !!(await fm.fileExists(`${docs}/${rel}`)); } catch { exists = true; }
+                if (!exists) continue;
+            }
+            try {
+                await fm.removeFile("documents", rel);
+                removed.push(rel);
+            } catch { /* 这个前缀下确实没有 */ }
+        }
+        return removed;
+    }
+
+    /** Kettu 的 saveCache 是 1 秒防抖：删早了会被内存里的旧缓存写回来，所以等一拍再删第二遍 */
+    async function repairMetroCache() {
+        let removed = await deleteMetroCache();
+        await new Promise(r => setTimeout(r, 1400));
+        removed = removed.concat(await deleteMetroCache());
+        if (!removed.length) throw new Error("没找到缓存文件（可能已经被手动删过了）");
+
+        const bundler = getNativeModule("BundleUpdaterManager");
+        if (!bundler || typeof bundler.reload !== "function") {
+            return `已删除 ${removed[0]}，请手动彻底关闭 Discord（最近任务里划掉）再打开`;
+        }
+
+        ui.toasts.showToast("模块缓存已清除，正在重启 Discord");
+        await new Promise(r => setTimeout(r, 500));
+        await bundler.reload();
+        return `已删除 ${removed[0]}，正在重载`;
+    }
+
     /* ================= 设置面板 ================= */
+
+    let simpleSheet; // undefined = 还没查过，null = 查过但没有
+    /** 同上：这个查询整个会话只做一次，别每次点行都全量扫描一遍 */
+    function getSimpleSheet() {
+        if (simpleSheet === undefined) {
+            try {
+                simpleSheet = metro.findByProps("showSimpleActionSheet") || null;
+            } catch {
+                simpleSheet = null;
+            }
+        }
+        return simpleSheet;
+    }
 
     function openRowMenu(userId, refresh) {
         const marks = readMarks();
         const entry = marks[userId];
         if (!entry) return;
 
-        const sheet = metro.findByProps("showSimpleActionSheet");
+        const sheet = getSimpleSheet();
         if (!sheet) return;
 
         const name = entry.username || userId;
@@ -673,6 +788,7 @@
         const [, forceUpdate] = React.useReducer(x => x + 1, 0);
         React.useEffect(() => forceUpdate(), [ids.length]);
         const [diag, setDiag] = React.useState(null);
+        const [repair, setRepair] = React.useState({ armed: false, busy: false, msg: "" });
 
         const children = [];
 
@@ -711,7 +827,28 @@
             ...children
         );
 
-        const optionsSection = null;
+        const repairSection = React.createElement(
+            Forms.FormSection,
+            { title: "卡住了再动这里" },
+            React.createElement(Forms.FormRow, {
+                key: "cache-repair",
+                label: repair.busy ? "正在清理模块缓存…" : (repair.armed ? "再点一次确认：删缓存 + 重启" : "修复：清空模块缓存并重启"),
+                subtext: repair.msg || "弹窗一开就炸（报 FluxContainer(Alert) is undefined）才点它，平时别碰",
+                destructive: true,
+                onPress: () => {
+                    if (repair.busy) return;
+                    if (!repair.armed) {
+                        setRepair({ armed: true, busy: false, msg: "确认后会删掉 caches/metro_modules.json 并重载 Discord" });
+                        setTimeout(() => setRepair({ armed: false, busy: false, msg: "" }), 15000);
+                        return;
+                    }
+                    setRepair({ armed: false, busy: true, msg: "正在删除，等两秒…" });
+                    repairMetroCache()
+                        .then(text => setRepair({ armed: false, busy: false, msg: text }))
+                        .catch(e => setRepair({ armed: false, busy: false, msg: `清理失败：${e && e.message}` }));
+                },
+            })
+        );
 
         const logs = readLogs();
         const markedIds = new Set(ids);
@@ -741,7 +878,7 @@
                 React.createElement(Forms.FormRow, {
                     key: "cap-0",
                     label: `面板：打开 ${sheetTrace.opens} 次 · 拿到渲染树 ${sheetTrace.hits} 次 · 加行 ${sheetTrace.rows} 次`,
-                    subtext: sheetTrace.lastError || `openLazy=${sheetTrace.openLazyPatched ? "已挂" : "没挂"} · 面板补丁=${sheetMods.length ? "已装" : "未装"}`,
+                    subtext: sheetTrace.lastError || `openLazy=${sheetTrace.openLazyPatched ? "已挂" : "没挂"} · 面板补丁=${sheetMods.length ? "已装" : "未装"} · 行组件=${sheetTrace.rowComp || "未定"}`,
                     disabled: true,
                 }),
             ] : []),
@@ -757,6 +894,7 @@
             null,
             idSection,
             markedSection,
+            repairSection,
             React.createElement(
                 Forms.FormSection,
                 { title: `标记用户发言（${markedLogs.length}/${getLogLimit()}）` },
