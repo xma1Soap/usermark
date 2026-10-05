@@ -35,13 +35,13 @@ kettu/
 | --- | --- |
 | `utils/markedUsers.ts` | 新增：读 UserMark 名单 |
 | `utils/markedFetch.ts` | 新增：按标记时间回溯当前频道发言 |
-| `components/MarkedUsersStrip.tsx` | 新增：标签栏下的名单带 |
+| `components/MarkedUsersStrip.tsx` | 新增：标签栏下的名单带（头像 + 当前频道名字/ID + 备注） |
 | `db.ts` | 新增 `NORMAL` 状态与两个标记查询 |
 | `components/hooks.ts` | 页签分流 |
 | `components/LogsModal.tsx` | 新增「标记用户发言」页签、名单带、拉取按钮 |
 | `index.tsx` | `MESSAGE_CREATE` 时把标记用户的发言入库 |
 | `settings.tsx` | 新增 `logMarkedUsers` 开关 |
-| `styles.css` | 名单带样式 |
+| `styles.css` | 名单带样式（走现役主题令牌，亮暗两侧都可读） |
 
 > 注意：这些文件里还带着本机的中文本地化改动，覆盖前先看一眼 diff。
 
@@ -76,4 +76,7 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | 备注弹窗点保存不关窗 | 已修（`onClose` + `closeAllModals` 双保险） |
 | 设置文件被探针抓的源码撑到 287KB | 已修（撤掉 `probe.ts`，启动时清掉遗留数据） |
 | `marks` 是坏数据时消息头 / 设置页整块崩 | 已修（读取统一兜底，克隆结果按存储对象身份缓存） |
+| 名单带只显示备注，暗色主题下几乎看不见 | 已修（改成头像 + 当前频道名字/ID + 备注；配色换到现役主题令牌，`--header-primary` 已被 Discord 移除，取不到值退成 `#111`） |
+| 名单带折叠 / 选中态没生效 | 已修（状态类得写整名 `msg-logger-marked-strip-collapsed`，`.strip.collapsed` 这种复合选择器被 `classNameFactory` 的前缀行为永远匹配不上） |
+| 名单带离线自测 | 42 条断言全绿（折叠阈值 / +N / 展开收起 / 名字回退链 / 点选 / 类名与样式表对齐），桩在 `.Hanako\usermark-tests\strip` |
 | 手机版 | 无弹窗重制版已推送，离线 45 条断言全绿，**真机待验证** |
