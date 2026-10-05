@@ -121,71 +121,94 @@
     }
 
     /* ================= 长按菜单 =================
-       Discord 移动端的消息长按菜单是 LazyActionSheet 拉起来的组件，
-       模块特征是带 EmojiRow（社区插件里验证过的定位方式）。
-       拿到组件返回的 JSX 后，遍历树找「一堆带 label+onPress 的行」，
-       往里塞我们自己的项 —— 比按死层级路径耐版本变化。 */
+       消息长按走 openLazy(promise, "MessageLongPressActionSheet", { message, … })。
+       先只读 openLazy 的参数认出是哪个面板，再把那个模块的 default 补一层，
+       从渲染结果里按形状找到行数组，往里 push 我们的项。
+       patcher 是 Proxy 包装，不改组件自身的 name/displayName，所以不会截断
+       Kettu 按名字找组件的链路（旧版把组件整个换掉过，代价是所有弹窗崩）。 */
 
-    /** 取“行属性”：React 元素看 props，纯配置对象看本体（新版面板两者都可能） */
-    function rowPropsOf(node) {
-        if (!node || typeof node !== "object" || Array.isArray(node)) return null;
-        return node.props && typeof node.props === "object" ? node.props : node;
+    const MARK_FLAG = "__usermarkRow";
+
+    /** 诊断状态：最近几次长按调用、补丁就位情况、命中次数 */
+    const sheetTrace = {
+        keys: [],
+        opens: 0,
+        hits: 0,
+        rows: 0,
+        lastError: "",
+        openLazyPatched: false,
+    };
+
+    /** 已经补过 default 的面板模块，避免同一次长按重复装 */
+    const sheetMods = [];
+
+    function traceSheetOpen(key, props, message, isLazy) {
+        try {
+            sheetTrace.opens++;
+            const line = `${key} · message=${message ? "有" : "无"} · lazy=${isLazy ? "是" : "否"} · props=[${Object.keys(props || {}).slice(0, 10).join(",")}]`;
+            if (sheetTrace.keys[0] === line) return;
+            sheetTrace.keys.unshift(line);
+            sheetTrace.keys.length = Math.min(sheetTrace.keys.length, 6);
+            logger.log(`【面板】${line}`);
+        } catch { /* 诊断不该影响长按本身 */ }
     }
 
-    function isMenuRow(node) {
-        const p = rowPropsOf(node);
-        return !!(
-            p && typeof p.onPress === "function"
-            && (p.label != null || p.text != null || p.title != null || p.children != null)
-        );
-    }
+    /**
+     * 在渲染树里找「一组带 onPress 的行」。
+     * 按形状认不按组件名认 —— Discord 把 ActionSheet 改名叫 BottomSheet 过，名字靠不住。
+     */
+    function findRows(root) {
+        const seen = new WeakSet();
+        let budget = 1400;
 
-    function findMenuRows(root) {
-        const queue = [root];
-        let best = null;
+        function walk(node, depth) {
+            if (node == null || depth > 12 || budget-- <= 0) return null;
 
-        while (queue.length) {
-            const node = queue.shift();
-            if (!node) continue;
+            if (Array.isArray(node) && node.some(x => x && x.props && typeof x.props.onPress === "function")) return node;
+            if (typeof node !== "object" || seen.has(node)) return null;
+            seen.add(node);
 
-            if (Array.isArray(node)) {
-                const rows = node.filter(isMenuRow);
-
-                // 放宽到一行也要：面板已经锁定是消息长按，卡「至少两行」反而抓不到分组结构
-                if (rows.length >= 1 && (!best || rows.length > best.length)) best = node;
-
-                for (const child of node) queue.push(child);
-                continue;
+            for (const k of Object.keys(node)) {
+                let v;
+                try { v = node[k]; } catch { continue; }
+                if (typeof v === "function") continue;
+                const got = walk(v, depth + 1);
+                if (got) return got;
             }
-
-            if (typeof node === "object") {
-                const p = rowPropsOf(node);
-                if (p) queue.push(p.children, p.rows, p.options, p.actions, p.items);
-            }
+            return null;
         }
 
-        return best;
+        return walk(root, 0);
     }
 
-    /** 往行数组里塞我们的项：跟着现有行的形状走（React 元素还是纯对象） */
-    function pushMarkRows(rows, author, message) {
-        if (!rows || !author || !author.id) return false;
-        if (rows.some(r => { const p = rowPropsOf(r); return p && p.key === "usermark-mark"; })) return true;
+    /**
+     * 行组件延迟到真正要出行时才查。
+     * 面板所在的 chunk 可能还没加载 —— 这时候 findByProps 找不到，Kettu 会把
+     * 这个查询永久标记成「没有」并写进磁盘缓存，之后再怎么找都是空。
+     */
+    function getRowComp() {
+        try {
+            const m = metro.findByProps("ActionSheetRow");
+            if (m && m.ActionSheetRow) return m.ActionSheetRow;
+        } catch { /* 换降级 */ }
+        return Forms.FormRow;
+    }
 
-        const sample = rows.find(isMenuRow);
-        const sampleIsElement = !!(sample && sample.props);
-        const sampleProps = rowPropsOf(sample);
-        const labelKey = sampleProps && sampleProps.label != null ? "label"
-            : sampleProps && sampleProps.title != null ? "title" : "text";
+    /** 往行数组尾部加「标记此用户 / 取消标记」 */
+    function injectRows(rows, message) {
+        const author = message && message.author;
+        if (!author || !author.id) return false;
+        if (rows.some(r => r && r.props && r.props[MARK_FLAG])) return false;
 
-        const makeRow = (key, label, onPress) => {
-            if (sampleIsElement) return React.createElement(Forms.FormRow, { key, label, onPress });
-            const row = { key, onPress };
-            row[labelKey] = label;
-            return row;
-        };
-
+        const Row = getRowComp();
         const existing = getMark(author.id);
+        const makeRow = (key, label, onPress) => React.createElement(Row, {
+            key,
+            label,
+            onPress,
+            [MARK_FLAG]: true,
+        });
+
         rows.push(makeRow("usermark-mark", existing ? "编辑标记备注" : "标记此用户", () => {
             hideSheet();
             askNote(author, message);
@@ -197,178 +220,73 @@
                 ui.toasts.showToast("已取消标记");
             }));
         }
+
+        sheetTrace.rows++;
         return true;
     }
 
-    /** 看着像一条 Discord 消息 */
-    function looksLikeMessage(v) {
-        return !!v && typeof v === "object" && (typeof v.id === "string" || typeof v.id === "number")
-            && (v.author || v.channel_id);
-    }
+    /** 挂 openLazy 钩子：只有消息长按面板那个模块会被补 */
+    function patchMessageSheet() {
+        const sheetActions = metro.findByProps("openLazy", "hideActionSheet");
 
-    /**
-     * 从面板 props 里挖消息：
-     * 先看常见属性名，再浅层掃一遍 —— 面板可能把消息藏在 route/params/嵌套对象里。
-     */
-    function findMessageInProps(props, depth) {
-        if (!props || typeof props !== "object" || (depth || 0) > 3) return null;
-
-        const direct = extractMessage(props);
-        if (direct) return direct;
-
-        for (const k of Object.keys(props)) {
-            let v;
-            try { v = props[k]; } catch { continue; }
-            if (looksLikeMessage(v)) return v;
-            if (v && typeof v === "object" && !Array.isArray(v) && (depth || 0) < 2) {
-                const found = findMessageInProps(v, (depth || 0) + 1);
-                if (found) return found;
-            }
-        }
-        return null;
-    }
-
-    /** 已打过补丁的组件，避免重复包装 */
-    const patchedComponents = new WeakSet();
-
-    /** 往长按面板里注入我们的行 */
-    function injectMarkRow(props, res) {
-        const message = findMessageInProps(props);
-        const author = message && message.author;
-        if (!author || !author.id) return false;
-
-        const rows = findMenuRows(res);
-        if (!rows) return false;
-
-        return pushMarkRows(rows, author, message);
-    }
-
-    /**
-     * 从一个模块里挑出值得补丁的导出。
-     * 顺序很重要：`default` 放最前 —— 消息面板的「容器」是 default，
-     * 而 EmojiRow / ActionSheetRow 只是它旁边的叶组件。
-     * 之前只补第一个命中的导出，一上来就补到叶子上，当然找不到行。
-     */
-    function candidateKeys(mod) {
-        const keys = [];
-        const markers = ["EmojiRow", "MessageLongPress", "ActionSheetRow"];
-
-        try {
-            const d = mod && mod.default;
-            if (typeof d === "function") keys.push("default");
-
-            for (const k of Object.keys(mod || {})) {
-                if (k === "default" || keys.includes(k)) continue;
-                const fn = mod[k];
-                if (typeof fn !== "function") continue;
-                try {
-                    const s = String(fn);
-                    if (markers.some(m => s.includes(m))) keys.push(k);
-                } catch { /* 取不到源码就跳过 */ }
-            }
-        } catch { /* 模块异常就返回已有的 */ }
-
-        return keys;
-    }
-
-    /** 给某个导出打补丁。返回是否真补上了 */
-    function patchExport(mod, key, label) {
-        try {
-            const fn = mod && mod[key];
-            if (typeof fn !== "function" || patchedComponents.has(fn)) return false;
-
-            const dn = fn.displayName || fn.name;
-            patchedComponents.add(fn);
-
-            const un = patcher.after(key, mod, (args, res) => {
-                const props = args && args[0];
-                try {
-                    recordCapture(label || key, props, res);
-                    injectMarkRow(props, res);
-                } catch (e) {
-                    logger.error("注入标记菜单失败", e);
-                }
-            });
-            void un;
-
-            if (dn && mod[key] && mod[key].displayName !== dn) {
-                try { mod[key].displayName = dn; } catch { /* 只读就作罢 */ }
-            }
-            try {
-                for (const k2 of Object.getOwnPropertyNames(fn)) {
-                    if (k2 === "prototype" || k2 === "arguments" || k2 === "caller") continue;
-                    if (!(k2 in mod[key])) { try { mod[key][k2] = fn[k2]; } catch { /* 只读就跳过 */ } }
-                }
-            } catch { /* 拿不到属性名就算了 */ }
-
-            return true;
-        } catch {
+        if (!sheetActions || typeof sheetActions.openLazy !== "function") {
+            logger.warn("没找到 ActionSheet 入口，长按标记不可用（仍可用设置页按 ID 标记）");
             return false;
         }
-    }
 
-    /** 把模块里所有候选导出全补上（不是只补第一个） */
-    function patchModuleAll(mod) {
-        let n = 0;
-        for (const key of candidateKeys(mod)) {
-            if (patchExport(mod, key, key)) n++;
-        }
-        return n;
-    }
+        unpatches.push(patcher.before("openLazy", sheetActions, ([component, key, props]) => {
+            const isLongPress = typeof key === "string" && /LongPress/i.test(key);
 
-    const MARKERS = ["EmojiRow", "MessageLongPress", "ActionSheetRow"];
+            const message = extractMessage(props);
+            // 所有面板都记一笔：万一 Discord 改了名，这里看得出到底弹的是哪个 key
+            traceSheetOpen(key, props, message, !!(component && typeof component.then === "function"));
 
-    /**
-     * 全量扫描：把每个模块里“源码提到面板特征”的导出全部补上。
-     * 不只看 findByProps("EmojiRow") 那一个模块 —— 真正的容器可能在另一个模块里。
-     */
-    function patchAllCandidates() {
-        const candidates = [];
+            if (!isLongPress) return;
 
-        try {
-            metro.find(m => {
+            // 面板名字里带 Message，或者参数里直接给了消息，才认定是消息长按
+            const isMessageSheet = message || /message/i.test(key);
+            if (!isMessageSheet || !component || typeof component.then !== "function") return;
+            if (sheetTrace.rows > 0) return; // 已经能出行了，别再装第二个补丁
+
+            component.then(mod => {
+                if (!mod || typeof mod.default !== "function") {
+                    sheetTrace.lastError = `面板模块 default 类型=${mod && typeof mod.default}`;
+                    return;
+                }
+                if (sheetMods.includes(mod)) return;
+                if (sheetMods.length >= 2) {
+                    sheetTrace.lastError = "补了两个模块还找不到行，八成不是渲染行的那个组件";
+                    return;
+                }
+
+                // 常驻补丁。spitroast 是 Proxy 包装，函数自身的 name/displayName 不受影响，
+                // 所以 Kettu 按名字找组件的链路不会被截断（旧版截断过一次，代价是所有弹窗都崩）
                 try {
-                    if (candidates.length >= 40 || !m || typeof m !== "object") return false;
-                    for (const k of Object.keys(m)) {
-                        const d = m[k];
-                        if (typeof d !== "function") continue;
-                        let s;
-                        try { s = String(d); } catch { continue; }
-                        if (MARKERS.some(x => s.includes(x))) {
-                            candidates.push({ mod: m, key: k });
-                            break;
+                    unpatches.push(patcher.after("default", mod, (args, tree) => {
+                        // 消息从本次渲染的 props 取，不靠当初 openLazy 那份闭包
+                        const msg = extractMessage(args && args[0]) || message;
+                        if (!msg || !msg.author) return;
+
+                        const rows = findRows(tree);
+                        if (!rows) {
+                            sheetTrace.lastError = `${key} 的渲染树里没找到行`;
+                            return;
                         }
-                    }
-                } catch { /* 单个模块跳过 */ }
-                return false;
-            });
-        } catch { /* 扫描不可用 */ }
+                        sheetTrace.hits++;
+                        injectRows(rows, msg);
+                    }));
+                    sheetMods.push(mod);
+                    logger.log(`长按面板补丁已装（第 ${sheetMods.length} 个：${key}）`);
+                } catch (e) {
+                    sheetTrace.lastError = `补 ${key} 失败：${e && e.message}`;
+                    logger.warn(sheetTrace.lastError);
+                }
+            }).catch(() => { /* 面板模块没加载成功，不拦正常长按 */ });
+        }));
 
-        let n = 0;
-        for (const { mod, key } of candidates) {
-            try {
-                if (patchExport(mod, key, key)) n++;
-            } catch { /* 单个跳过 */ }
-        }
-
-        logger.log(`全量扫描：命中 ${candidates.length} 个候选，补上 ${n} 个`);
-        return { found: candidates.length, patched: n };
-    }
-
-    function patchMessageSheet() {
-        const sheetModule = metro.findByProps("EmojiRow");
-
-        if (!sheetModule) {
-            logger.warn("没找到消息长按菜单组件（EmojiRow），标记入口不可用");
-            return;
-        }
-
-        const patched = patchModuleAll(sheetModule);
-        if (patched === 0) {
-            logger.warn("EmojiRow 模块里没有可补的导出");
-        } else {
-            logger.log(`长按菜单已补丁 ${patched} 个导出`);
-        }
+        sheetTrace.openLazyPatched = true;
+        logger.log("长按菜单钩子已挂（等第一次长按消息装面板补丁）");
+        return true;
     }
 
     /* ============ 消息日志（原 vc-message-logger-enhanced 精简并入） ============
@@ -559,27 +477,34 @@
         logger.warn("没找到 FluxDispatcher，消息日志不可用");
     }
 
-    /** 一键把定位线索写进日志：到底是模块没了，还是行结构对不上 */
+    /** 一键把定位线索写进日志：钩子挂上了没、长按时 openLazy 报的是什么 key */
     function runDiag() {
         const report = [];
-        const probes = ["EmojiRow", "ActionSheetRow", "MessageLongPress", "MessageActionSheet", "hideActionSheet", "openLazy", "showSimpleActionSheet"];
 
-        for (const p of probes) {
+        for (const p of ["openLazy", "ActionSheetRow", "showSimpleActionSheet"]) {
             try {
-                const found = metro.findByProps(p);
-                report.push(`${p}=${found ? "有" : "无"}`);
-            } catch (e) {
+                report.push(`${p}=${metro.findByProps(p) ? "有" : "无"}`);
+            } catch {
                 report.push(`${p}=错`);
             }
         }
 
-        try {
-            const result = patchAllCandidates();
-            report.push(`全量候选=${result.found}个`);
-            report.push(`已补丁=${result.patched}`);
-        } catch (e) {
-            report.push(`扫描失败=${e && e.message}`);
+        if (!sheetTrace.openLazyPatched) {
+            try {
+                report.push(`重挂=${patchMessageSheet() ? "成功" : "失败"}`);
+            } catch (e) {
+                report.push(`重挂=错（${e && e.message}）`);
+            }
         }
+
+        report.push(`openLazy 钩子=${sheetTrace.openLazyPatched ? "已挂" : "没挂上"}`);
+        report.push(`面板补丁=${sheetMods.length ? `已装 ${sheetMods.length} 个模块` : "还没装上（长按一次消息后才有）"}`);
+        report.push(`面板打开=${sheetTrace.opens} · 渲染树=${sheetTrace.hits} · 加行=${sheetTrace.rows}`);
+        if (sheetTrace.lastError) report.push(`问题：${sheetTrace.lastError}`);
+        report.push(`模块数=${Object.keys(metro.modules || {}).length}`);
+
+        for (const line of sheetTrace.keys) report.push(`面板 ${line}`);
+        if (!sheetTrace.keys.length) report.push("还没记录到任何面板：先去长按一条消息，再回来看这几行");
 
         logger.warn("【诊断】" + report.join(" | "));
         return report;
@@ -592,30 +517,6 @@
             || (Array.isArray(props.messages) && props.messages[0])
             || (props.data && props.data.message);
         return m || null;
-    }
-
-    /** 每个被补丁的组件渲染时，把看到的 props 记下来，给设置页展示 */
-    const diagCapture = { last: null, count: 0, log: [] };
-
-    function recordCapture(key, props, res) {
-        try {
-            const rows = findMenuRows(res);
-            const propKeys = Object.keys(props || {}).slice(0, 14);
-            diagCapture.last = {
-                key,
-                propKeys,
-                hasMessage: !!extractMessage(props),
-                rows: rows ? rows.length : 0,
-            };
-            diagCapture.count++;
-            if (diagCapture.count <= 12) {
-                diagCapture.log.unshift(`【命中】${key} props=[${propKeys.join(",")}] message=${diagCapture.last.hasMessage ? "有" : "无"} 行=${diagCapture.last.rows}`);
-                diagCapture.log.length = Math.min(diagCapture.log.length, 8);
-                logger.warn(diagCapture.log[0]);
-            }
-        } catch (e) {
-            logger.warn("记录命中失败", e);
-        }
     }
 
     /** 菜单进不来时的保底入口：一条输入框搞定标记 */
@@ -828,7 +729,7 @@
             React.createElement(Forms.FormRow, {
                 key: "mark-diag",
                 label: "跑一次菜单定位诊断",
-                subtext: "结果直接列在下方，截给白娅即可（会顺带自动补一次丁）",
+                subtext: "结果列在下方。没长按过就先长按一条消息再进来点它",
                 onPress: () => { try { setDiag(runDiag() || []); } catch (e) { logger.error("诊断失败", e); setDiag(["诊断异常：" + (e && e.message)]); } },
             }),
             ...(diag || []).map((line, i) => React.createElement(Forms.FormRow, {
@@ -836,20 +737,15 @@
                 label: line,
                 disabled: true,
             })),
-            ...(diagCapture.last ? [
+            ...(sheetTrace.keys.length ? [
                 React.createElement(Forms.FormRow, {
                     key: "cap-0",
-                    label: `最近命中：${diagCapture.last.key}`,
-                    disabled: true,
-                }),
-                React.createElement(Forms.FormRow, {
-                    key: "cap-1",
-                    label: `props=[${diagCapture.last.propKeys.join(",") || "空"}]`,
-                    subtext: `message=${diagCapture.last.hasMessage ? "有" : "无"} · 找到行=${diagCapture.last.rows} · 累计渲染=${diagCapture.count}`,
+                    label: `面板：打开 ${sheetTrace.opens} 次 · 拿到渲染树 ${sheetTrace.hits} 次 · 加行 ${sheetTrace.rows} 次`,
+                    subtext: sheetTrace.lastError || `openLazy=${sheetTrace.openLazyPatched ? "已挂" : "没挂"} · 面板补丁=${sheetMods.length ? "已装" : "未装"}`,
                     disabled: true,
                 }),
             ] : []),
-            ...diagCapture.log.map((line, i) => React.createElement(Forms.FormRow, {
+            ...sheetTrace.keys.map((line, i) => React.createElement(Forms.FormRow, {
                 key: "caplog-" + i,
                 label: line,
                 disabled: true,
@@ -891,13 +787,6 @@
             } catch (e) {
                 logger.error("挂载长按菜单失败", e);
             }
-            try {
-                patchAllCandidates();
-            } catch (e) {
-                logger.warn("全量补丁失败", e);
-            }
-            // 策略二已停用：挂 openLazy 会让 Kettu 的 byDisplayName 整条链坏掉，
-            // 表现为 FluxContainer(Alert) 解析不到、渲染弹窗就崩。实测过，不再挂。
             try {
                 startLogger();
             } catch (e) {

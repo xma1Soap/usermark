@@ -61,7 +61,7 @@ kettu/
 https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 ```
 
-改过 `index.js` 记得同步 `manifest.json` 的 `hash`（sha256）。
+改过 `index.js` 记得同步 `manifest.json` 的 `hash`——它不是完整性校验，只是变更标记：Kettu 比对不上才会重新拉 JS，一样就沿用缓存里的旧版。
 
 **手机版没做徽标**：桌面版靠 `MessageDecorationsAPI`，移动端没有对应槽位，得先在真机上定位消息头部的组件名，我没有安卓环境，瞎猜写进去只会让你装个坏插件。
 
