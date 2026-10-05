@@ -12,12 +12,41 @@
 | 成员列表 | 名字后面挂 `[被标记]` 徽标（可在设置里关） |
 | 频道右上角 | 一排图标最左边多出一枚**问号**图标（tooltip「标记发言」），点开自己的记录弹窗 |
 | Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑、删除，右上角有「查看标记发言」 |
-| 「标记发言」弹窗 | 名单带（每人一枚标签）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文；被标记时「用来标记的那条」左边压一条竖杠、头上挂一枚「标记来源」标签。点一行跳回原消息，右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」，右键名单标签可「修改标记 / 跳到标记来源 / 取消标记」 |
+| 「标记发言」弹窗 | 名单带（每人一枚**带头像**的标签，超过 6 人折叠，折叠时露的是**最新标记**的那几个）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文；被标记时「用来标记的那条」左边压一条竖杠、头上挂一枚「标记来源」标签。点一行跳回原消息（帖子 / 子区没加载过也跳得动），右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」，右键名单标签可「修改标记 / 跳到标记来源 / 取消标记」 |
 
 弹窗有两个入口（右上角问号、设置页名单面板的「查看标记发言」），都指向同一个 `openMarkedMessagesModal()`，全部不依赖日志插件。右上角那枚走 Discord 自己的 `HeaderBarIcon`（`findComponentByCodeLazy(".HEADER_BAR_BADGE_BOTTOM,", 'position:"bottom"')`），注入点是 `toolbar: … mobileToolbar: …` 那个组件的补丁，跟日志插件的按钮用的是同一处、各自插自己的调用（补丁里的 `$self` 按插件实例替换，不会互相盖）。
 
 输入框工具栏那颗按钮已经撤了：入口只留右上角一处，一个功能不需要两个门。撤的时候顺手把 `dependencies` 里的 `ChatInputButtonAPI` 一起删了——留着一个不用的 API 依赖，等于让插件被强制启用一个用不上的内置插件。
 
+
+## 头像和名字从哪来
+
+`profiles.ts` 管这件事，弹窗一打开就 `ensureProfiles(Object.keys(marks))` 把名单里缺的人补一遍。名字走一条明确的兜底链，从前到后第一个有值的赢：
+
+1. 服务器昵称（`GuildMemberStore.getMember(guildId, id).nick`）
+2. 好友备注名（`RelationshipStore.getNickname(id)`）
+3. `globalName` → `username`（`UserStore.getUser(id)`）
+4. 插件自己补来的档案（`GET /users/{id}/profile?with_counts=false`）
+5. 标记那一刻存下的 `username` 快照
+6. 都没有就直接显示 ID（雪花）
+
+头像同理：`UserStore` 里有这个人就走 Discord 自己的 `getAvatarURL(guildId, 64, false)`；没有就用补来的 hash 手拼 CDN 地址（`a_` 开头的是动图，后缀得给 `gif`）。
+
+为什么要自己补：`UserStore.getUser()` 只认**已经缓存过**的用户。名单里躺着一个只在别的服务器说过话的人，本地就没有他的档案，界面上只剩一串雪花数字和一个空头像圈——实测截图里那两枚「1526926386780962838」就是这么来的。补档案一人一发请求、间隔 250ms，已缓存的、正在拉的、`UserStore` 里已经有的都跳过，429 / 404 只记一条 warn（补不到就退到快照名，不报错、不白圈刷屏）。档案是异步到位的，所以 `profiles.ts` 带一个版本号 + 订阅，弹窗用 `useProfilesVersion()` 挂上去，补回来一个人就重渲染一次、并再扫一遍还缺谁，全补齐之后 `ensureProfiles` 不再发请求，循环自己就停了。
+
+没有 `fetchUserAsync` 这东西，头像也没有能直接用的现成签名（`IconUtils.getUserAvatarURL` 的参数形态不确定），所以 CDN 地址手拼，先例见 `plugins/xsOverlay/index.tsx`。
+
+## 跳转为什么走路由而不是 `jumpToMessage`
+
+原来那套是「`FluxDispatcher.dispatch({ type: "SELECT_CHANNEL" })` + `MessageActions.jumpToMessage()`」，实测只有在**当前界面已经停在有这条消息的子区 / 帖子**时才跳得动：`SELECT_CHANNEL` 要求频道已经在 `ChannelStore` 里，帖子（线程）没被打开过就没有这条记录，`guild_id` 只能猜成 `@me`，于是 Discord 拿到一个对不上号的频道 id，界面纹丝不动。
+
+现在换成 Discord 自己的消息链接路由：
+
+```ts
+NavigationRouter.transitionTo(`/channels/${guildId || "@me"}/${channelId}/${messageId}`);
+```
+
+认不出来的 id 它会自己去拉，帖子 / 未加载的子区 / 跨服务器频道都能直达。`guildId` 用的是每条 `MarkedRecord` 本来就落库的那个字段，不用猜；「跳到标记来源」那条消息未必在当前列表里，所以先按 id 在已捕获的记录里找它的 `guildId`，找不到才退回 `ChannelStore`。跳转之后立刻 `closeDialog()` 关弹窗，否则路由变了窗还糊在上面。
 
 ## 与 ShowMeYourName 的顺序
 
@@ -119,9 +148,12 @@ node .\node_modules\eslint\bin\eslint.js src/userplugins\UserMark   # lint
 
 ```powershell
 cd "C:\Users\11028\Documents\.Hanako\usermark-tests\vencord"
-node build.mjs              # settings 层：读写兜底、克隆缓存、探针清理
-node build2.mjs entry2.mjs  # 徽标 + 名单面板
-node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链
+node build.mjs              # settings 层：读写兜底、克隆缓存、探针清理（42 条）
+node build2.mjs entry2.mjs  # 徽标 + 名单面板（41 条）
+node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链（43 条）
+
+cd "C:\Users\11028\Documents\.Hanako\usermark-tests\modal"
+node build.mjs              # 「标记发言」弹窗整棵组件树（57 条）
 ```
 
 三行都该是 `失败 0 条`（42 / 41 / 43）。它把这几件事钉住了：
@@ -150,7 +182,17 @@ node build.mjs                 # 110 条，全绿才是 0 失败
 - ⑨ 观感契约：搜索框不用 Discord 的 `TextInput`（它在这个弹窗里就是浏览器默认的白框）、`.vc-usermark-logs-search` 自己用 `--input-background-default` 上色、「标记来源」的标识类名都在、名单标签右键有「跳到标记来源」
 - ⑨ 反向契约：日志插件目录里再扫不到 `UserMark` / `markedUsers` / `markedFetch` / `MarkedUsersStrip` / `MarkNoteModal` / `logMarkedUsers` / `LogTabs.MARKED` 任何一个，子页面不会被哪天又长回来
 
-弹窗本身要真 Discord 才渲染得动，这块离线只验到类名和筛选逻辑；点开的表现还得实测。
+弹窗自己还有一套更贴近界面的桩（`usermark-tests\modal\`）：手写的 React 替身（`withFrame` + 按调用路径分槽位的 `useState` / `useEffect` / `useMemo`）把真的函数组件展成一棵可以遍历、可以点、可以读类名的宿主节点树，`MarkedMessagesModal.tsx` 从头到尾是真的，连 `@api/Styles` 都编译的是真的 `src/utils/css.ts`。它钉住的是：
+
+- 折叠：9 人只露 6 枚 + `+3`，露出来的按 `markedAt` **倒序**（刚标记的人不会被压在折叠线后面），展开 / 收起往返还原样
+- 头像与名字：`UserStore` 命中、档案补来的 PNG、`a_` 开头的动图拼成 gif、404 时退到快照名且不画空 `<img>`、什么都不知道才显示雪花
+- 跳转：帖子走 `/channels/900/c-thread/m1`、私聊走 `/channels/@me/c-dm/m2`，断言的是 `NavigationRouter.transitionTo` 收到的那一串
+- 行与标签的右键项齐全、取消标记真的写回设置、`ensureProfiles` 不重复发请求也不给空 id 发
+- 筛选与排序：搜索框、`channel:force`、`source,channel:auto` 的先后
+
+两套桩都撞过一个同一个坑：`@api/Styles` 在模块顶层就 `document.createElement`，`HeaderButton` / `MarkPanel` 又引用 `./MarkedMessagesModal`，于是 Node 里一编译就炸。解法是把弹窗在那个入口上桩掉（`stub-markedmodal.mjs`），`@webpack` 的 lazy 查找同样桩掉（`stub-webpack-lazy.mjs`，不桩会把真的 `src/webpack/common` 目录顺着相对导入拖进来，一路拽到 `document`）。
+
+弹窗的视觉表现（配色在暗色 / 亮色主题下的实际对比度、头像圈的描边）还是得开 Discord 看，离线只验到类名、结构和回调。
 
 ## 与消息记录器的关系
 

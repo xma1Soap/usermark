@@ -18,8 +18,8 @@ import {
     FluxDispatcher,
     GuildMemberStore,
     Menu,
-    MessageActions,
     Modal,
+    NavigationRouter,
     openModal,
     RelationshipStore,
     SelectedChannelStore,
@@ -32,6 +32,7 @@ import {
 import { fetchCurrentChannel, fetchMarkedSourceMessages } from "./backfill";
 import { clearRecords, getAllRecords } from "./db";
 import { openMarkModal } from "./MarkModal";
+import { ensureProfiles, getProfilesVersion, resolveAvatarUrl, resolveDisplayName, subscribeProfiles } from "./profiles";
 import { MarkedRecord, selectRecords } from "./records";
 import { asMarkMap, MarkEntry, MarkSourceMessage, removeMark, settings } from "./settings";
 import { formatTimestamp } from "./utils";
@@ -58,22 +59,23 @@ function useCurrentGuildId(): string | undefined {
         ChannelStore.getChannel(SelectedChannelStore.getChannelId())?.guild_id || undefined);
 }
 
-/** 这个人在当前场景里实际显示的名字：服务器昵称 > 私聊备注名 > 全局名 > 用户名 */
-function useDisplayName(userId: string, guildId: string | undefined): string {
-    return useStateFromStores([UserStore, GuildMemberStore, RelationshipStore], () => {
-        const user = UserStore.getUser(userId);
-        if (!user) return userId;
-
-        return (guildId && GuildMemberStore.getNick(guildId, userId))
-            || RelationshipStore.getNickname(userId)
-            || user.globalName
-            || user.username;
-    });
+/** 这个人在当前场景里实际显示的名字，回退链见 profiles.ts */
+function useDisplayName(userId: string, guildId: string | undefined, snapshotName = ""): string {
+    return useStateFromStores([UserStore, GuildMemberStore, RelationshipStore], () =>
+        resolveDisplayName(userId, guildId, snapshotName));
 }
 
 function useAvatarUrl(userId: string, guildId: string | undefined): string {
-    return useStateFromStores([UserStore, GuildMemberStore], () =>
-        UserStore.getUser(userId)?.getAvatarURL(guildId, 32, false) ?? "");
+    return useStateFromStores([UserStore, GuildMemberStore], () => resolveAvatarUrl(userId, guildId));
+}
+
+/* 档案是异步补进来的，到位时得有人把弹窗重渲染一遍，不然头像要等别的什么原因刷新才露出来 */
+function useProfilesVersion(): number {
+    const [version, setVersion] = useState(getProfilesVersion());
+
+    useEffect(() => subscribeProfiles(() => setVersion(getProfilesVersion())), []);
+
+    return version;
 }
 
 function useChannelLabel(channelId: string): string {
@@ -113,6 +115,8 @@ export function openMarkedMessagesModal(): void {
 interface ChipProps {
     userId: string;
     note: string;
+    /** 标记那一刻存下的显示名快照，档案没缓存时拿它顶名字 */
+    snapshotName: string;
     source?: MarkSourceMessage;
     guildId: string | undefined;
     active: boolean;
@@ -160,8 +164,8 @@ function ChipContextMenu({ displayName, userId, source, onUnmark, onViewSource }
     );
 }
 
-function Chip({ userId, note, source, guildId, active, onClick, onUnmark, onViewSource }: ChipProps) {
-    const displayName = useDisplayName(userId, guildId);
+function Chip({ userId, note, snapshotName, source, guildId, active, onClick, onUnmark, onViewSource }: ChipProps) {
+    const displayName = useDisplayName(userId, guildId, snapshotName);
     const avatarUrl = useAvatarUrl(userId, guildId);
 
     return (
@@ -197,7 +201,10 @@ function UserStrip({ marks, activeUserId, onPick, onViewSource }: StripProps) {
     const [expanded, setExpanded] = useState(false);
     const guildId = useCurrentGuildId();
 
-    const userIds = Object.keys(marks);
+    // 名单是插入序（新标记的排在最后），折叠只露前几枚，所以按标记时间倒序，刚标的人不会藏在折叠线后面
+    const userIds = Object.keys(marks)
+        .sort((a, b) => (marks[b]?.markedAt ?? 0) - (marks[a]?.markedAt ?? 0));
+
     if (userIds.length === 0) return null;
 
     const visible = expanded ? userIds : userIds.slice(0, COLLAPSED_COUNT);
@@ -212,6 +219,7 @@ function UserStrip({ marks, activeUserId, onPick, onViewSource }: StripProps) {
                     key={userId}
                     userId={userId}
                     note={(marks[userId]?.note ?? "").trim()}
+                    snapshotName={(marks[userId]?.username ?? "").trim()}
                     source={marks[userId]?.sourceMessage}
                     guildId={guildId}
                     active={activeUserId === userId}
@@ -238,6 +246,8 @@ function UserStrip({ marks, activeUserId, onPick, onViewSource }: StripProps) {
 interface RowProps {
     record: MarkedRecord;
     note: string;
+    /** 标记那一刻存下的显示名快照，档案没缓存时拿它顶名字 */
+    snapshotName: string;
     /** 这条就是这个人被标记时用的那条消息 */
     isSource: boolean;
     onJump: (record: MarkedRecord) => void;
@@ -281,9 +291,9 @@ function RowContextMenu({ record, displayName, onJump, onUnmark }: {
     );
 }
 
-function Row({ record, note, isSource, onJump, onUnmark }: RowProps) {
+function Row({ record, note, snapshotName, isSource, onJump, onUnmark }: RowProps) {
     const guildId = record.guildId ?? undefined;
-    const displayName = useDisplayName(record.authorId, guildId);
+    const displayName = useDisplayName(record.authorId, guildId, snapshotName);
     const avatarUrl = useAvatarUrl(record.authorId, guildId);
     const channelLabel = useChannelLabel(record.channelId);
     const statusLabel = STATUS_LABEL[record.status];
@@ -325,6 +335,7 @@ function Row({ record, note, isSource, onJump, onUnmark }: RowProps) {
 function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) {
     const marks = asMarkMap(settings.use(["marks"]).marks);
     const logging = settings.use(["logMarkedMessages"]).logMarkedMessages;
+    const profilesVersion = useProfilesVersion();
 
     const [authorId, setAuthorId] = useState<string | null>(null);
     const [query, setQuery] = useState("");
@@ -363,6 +374,12 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
         })();
     }, []);
 
+    // 名单里的人未必在 UserStore 里（没点过他资料、私聊对面那位），档案要自己补一发才有头像和名字。
+    // profilesVersion 进依赖：补回来一个就再扫一遍，全部补齐后 ensureProfiles 不再发请求，也就停住了。
+    useEffect(() => {
+        void ensureProfiles(Object.keys(marks));
+    }, [profilesVersion, marks]);
+
     const rows = useMemo(
         () => selectRecords(records, { marks, authorId, query, newest, limit }),
         [records, marks, authorId, query, newest, limit]
@@ -373,35 +390,31 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
         [records, marks, authorId, query, newest]
     );
 
-    const jumpToMessage = (channelId: string, messageId: string) => {
+    const jumpToMessage = (channelId: string, messageId: string, guildId?: string | null) => {
         try {
-            if (channelId !== SelectedChannelStore.getChannelId()) {
-                FluxDispatcher.dispatch({
-                    type: "SELECT_CHANNEL",
-                    guildId: ChannelStore.getChannel(channelId)?.guild_id ?? "@me",
-                    channelId
-                });
-            }
-
-            MessageActions.jumpToMessage({
-                channelId,
-                messageId,
-                flash: true,
-                jumpType: "INSTANT",
-            });
-
+            // 走 Discord 自己的消息链接路由：认不了的路由它会自己去把频道拉下来，
+            // 所以没加载过的帖子 / 子区也跳得动。
+            // 原来那套「手动 SELECT_CHANNEL + jumpToMessage」得先假设频道已经在 ChannelStore 里
+            // （不然 guild_id 取不到就退成 "@me"），所以只有界面正停在那个帖子/子区里才好使。
+            NavigationRouter.transitionTo(`/channels/${guildId || "@me"}/${channelId}/${messageId}`);
             closeDialog(modalProps);
         } catch (e) {
             Flogger.error("跳转失败", e);
         }
     };
 
-    const jumpTo = (record: MarkedRecord) => jumpToMessage(record.channelId, record.id);
+    const jumpTo = (record: MarkedRecord) => jumpToMessage(record.channelId, record.id, record.guildId);
 
     // 名单标签右键用：跳到「当初拿来标记他的那条」，那条自己也在这份库里
     const jumpToSource = (source: MarkSourceMessage) => {
         if (!source?.id || !source.channelId) return;
-        jumpToMessage(source.channelId, source.id);
+
+        // 名单里只存了频道和消息 id，服务器得从库里那条记录现取（取不到再问频道本身）
+        const guildId = records.find(record => record.id === source.id)?.guildId
+            ?? ChannelStore.getChannel(source.channelId)?.guild_id
+            ?? null;
+
+        jumpToMessage(source.channelId, source.id, guildId);
     };
 
     const runFetch = async () => {
@@ -494,6 +507,7 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
                             key={record.id}
                             record={record}
                             note={(marks[record.authorId]?.note ?? "").trim()}
+                            snapshotName={(marks[record.authorId]?.username ?? "").trim()}
                             isSource={marks[record.authorId]?.sourceMessage?.id === record.id}
                             onJump={jumpTo}
                             onUnmark={userId => {

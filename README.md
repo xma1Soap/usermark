@@ -37,6 +37,7 @@ kettu/
 | `capture.ts` | 订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`，只记名单里的人；删除只改状态不丢正文；回调里的错统一吞成日志 |
 | `backfill.ts` | 回溯当前频道（服务器走搜索接口、私聊读频道历史）、按 id 精确补「用来标记的那条」、按 `maxMarkedMessages` 裁剪 |
 | `MarkedMessagesModal.tsx` | 「标记发言」弹窗：名单带 + 发言列表 + 搜索/排序/拉取/清空，行可跳回原消息、复制内容、改备注、取消标记；「用来标记的那条」挂「标记来源」标识，名单标签右键可直接跳到它 |
+| `profiles.ts` | 头像与显示名的补档层：`UserStore` 里没有的人按需请求一次 `/users/{id}/profile`，带缓存、订阅和名字兜底链（昵称 → 备注名 → globalName → username → 档案 → 标记时的快照 → 雪花 ID） |
 | `HeaderButton.tsx` | 频道右上角那枚问号图标：补丁塞进 Discord 自己的 `HeaderBarIcon` 那一排，点开同一个弹窗 |
 
 设置里三个新开关：`logMarkedMessages`（存不存，默认开）、`maxMarkedMessages`（总条数上限，默认 2000，0 = 不限制）、`markedMessagesPerPage`（弹窗一屏多少条，默认 100）。
@@ -74,7 +75,8 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | --- | --- |
 | 桌面标记 / 徽标 / 名单面板 | 已验证 |
 | 桌面端离线自测 | 126 条断言全绿（settings 层 / 徽标+面板 / 菜单→弹窗→保存），桩在 `.Hanako\usermark-tests\vencord` |
-| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名与观感对齐 / 日志插件解耦） | 离线 110 条断言全绿，桩在 `.Hanako\usermark-tests\standalone`；**弹窗真机待验证**（离线只验到类名、静态契约与筛选，渲染要真 Discord） |
+| 弹窗离线自测 | 57 条断言全绿（折叠露最新 6 人 / 头像与名字兜底链 / 跨帖子跳转的路由串 / 两处右键 / 补档不重复发请求 / 筛选排序），桩在 `.Hanako\usermark-tests\modal`；**配色与头像圈描边还得真机看** |
+| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名与观感对齐 / 日志插件解耦） | 离线 110 条断言全绿，桩在 `.Hanako\usermark-tests\standalone` |
 | 日志插件里的 UserMark 子页面 | 已删干净（页签 / 名单带 / 「标记来源」标识 / 行右键那两项 / `logMarkedUsers` / 四个新文件），功能全留在 UserMark 自己的弹窗里；离线桩会扫日志插件目录，重新长回来就红 |
 | 入口重复（右上角问号 + 输入框工具栏各一颗） | 已收成一处（输入框那颗和它依赖的 `ChatInputButtonAPI` 一起删了） |
 | 弹窗搜索框是浏览器默认的白框 | 已修（不再用 Discord 的 `TextInput`，自己写 input，背景走 `--input-background-default`，边框 / 文字 / placeholder 全用现役令牌） |
@@ -86,5 +88,8 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | 点开日志弹窗整个 Discord 崩掉 | 已修（名单带曾在模块顶层快照 `waitForStore` 异步赋值的 store，拿到的是 undefined）；同一个写法现在在 UserMark 的弹窗里，桩会复现这个时序，重新引入会直接红 |
 | 「标记来源」标识看不到 | 已修（代码与数据都完好，问题是那条消息不在列表首页：弹窗一开就按 id 回源补一次，名单标签右键再加「跳到标记来源」直达） |
 | 来源标识不随名单变化刷新 | 已修（弹窗用 `settings.use([ "marks" ])` 订阅名单，行从上面拿结果，不是挂载时拍快照） |
+| 名单带和发言行没有头像、名字是一串雪花 | 已修（`UserStore.getUser()` 只认已缓存的用户，名单里没缓存的人以前就只剩 ID。新增 `profiles.ts` 按需补档案，名字走完整兜底链、头像缺缓存时手拼 CDN 地址，动图认 `a_` 前缀；补不到就退到标记时的快照名，不画空头像圈） |
+| 折叠露出来的是最旧的 6 个人 | 已修（名单是插入序，折叠前按 `markedAt` 倒序，刚标记的人不会再藏在折叠线后面） |
+| 「跳到原消息」只有停在那条消息所在的子区 / 帖子才跳得动 | 已修（改用 Discord 自己的消息链接路由 `NavigationRouter.transitionTo("/channels/{ guild }/{ channel }/{ message }")`，认不出的频道它自己拉；`guildId` 直接取记录里存的那个，不再猜 `@me`） |
 | 改备注 / 取消标记 | 名单标签右键 + 记录行右键都有（原先日志弹窗里那份重复实现已删除） |
 | 手机版 | 无弹窗重制版已推送，离线 45 条断言全绿，**真机待验证** |
