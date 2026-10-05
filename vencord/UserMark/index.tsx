@@ -14,6 +14,7 @@ import { Menu, showToast } from "@webpack/common";
 
 import { startCapture, stopCapture } from "./capture";
 import { registerDecorators, unregisterDecorators } from "./Decorations";
+import { addIconToToolBar } from "./HeaderButton";
 import { openMarkedMessagesModal } from "./MarkedMessagesModal";
 import { MarkTarget, openMarkModal } from "./MarkModal";
 import { getMark, purgeProbeLeftovers, removeMark, settings, sourceFromMessage } from "./settings";
@@ -69,6 +70,20 @@ export default definePlugin({
     // ChatInputButtonAPI 不是可选的：工具栏那颗图标靠它的补丁往里塞，
     // 没声明依赖时插件不会被强制启用，图标就根本不出现（addChatBarButton 本身不报错，很容易看不出来）
     dependencies: ["MessageDecorationsAPI", "MemberListDecoratorsAPI", "ChatInputButtonAPI"],
+
+    patches: [
+        {
+            // 频道右上角那一排图标。日志插件用的是同一个注入点，两处补丁各自插自己的调用，互不影响
+            find: /toolbar:\i,mobileToolbar:\i/,
+            replacement: {
+                match: /(function \i\(\i\){)(.{1,200}toolbar.{1,100}mobileToolbar)/,
+                replace: "$1$self.addIconToToolBar(arguments[0]);$2"
+            }
+        },
+    ],
+
+    // 补丁里的 $self 指向插件实例，所以这个方法必须挂在导出对象上
+    addIconToToolBar,
 
     start() {
         registerDecorators();

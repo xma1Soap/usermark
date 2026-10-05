@@ -324,15 +324,19 @@ function MarkedMessagesModal({ modalProps }: { modalProps: RenderModalProps; }) 
         };
     }, [reloadKey]);
 
-    // 打开时补一次：标记来源那条 + 当前频道的回溯（非强制，撞 60 秒冷却就跳过）
+    // 打开时补一次：先按 id 精确补「标记来源那条」，再回溯当前频道（非强制，撞 60 秒冷却就跳过）。
+    // 两条路共用同一个 running 闸门，必须串着来：并排发的话后一条一定被判成「正在跑」而整条跳过，
+    // 表现就是弹窗开着却一条都没补进来。
     useEffect(() => {
-        fetchMarkedSourceMessages()
-            .then(added => added > 0 && reload())
-            .catch(e => Flogger.error("补拉标记来源失败", e));
-
-        fetchCurrentChannel()
-            .then(result => result.added > 0 && reload())
-            .catch(e => Flogger.error("回溯当前频道失败", e));
+        (async () => {
+            try {
+                const sourceAdded = await fetchMarkedSourceMessages();
+                const backfill = await fetchCurrentChannel();
+                if (sourceAdded > 0 || backfill.added > 0) reload();
+            } catch (e) {
+                Flogger.error("打开弹窗时补记录失败", e);
+            }
+        })();
     }, []);
 
     const rows = useMemo(

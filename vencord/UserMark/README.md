@@ -10,11 +10,13 @@
 | 右键消息 | 同上，取该消息的作者 |
 | 消息头 | 名字后面挂 `[被标记]` 徽标 |
 | 成员列表 | 名字后面挂 `[被标记]` 徽标（可在设置里关） |
-| 输入框工具栏 | 一枚「标记发言」图标（`LogIcon`），点开自己的记录弹窗 |
+| 频道右上角 | 一排图标最左边多出一枚**问号**图标（tooltip「标记发言」），点开自己的记录弹窗 |
+| 输入框工具栏 | 一枚「标记发言」图标（`LogIcon`），同一个弹窗 |
 | Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑、删除，右上角有「查看标记发言」 |
 | 「标记发言」弹窗 | 名单带（每人一枚标签）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文。点一行跳回原消息，右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」 |
 
-工具栏那颗图标走 Vencord 的 `ChatButtons` API，它由内置插件 `ChatInputButtonAPI` 的补丁负责往里塞，所以这个 API 名字**必须写在 `dependencies` 里**：不声明的话 `addChatBarButton()` 一样跑得不声不响、不报错，但图标根本不会出现（`MessageDecorationsAPI` / `MemberListDecoratorsAPI` 同理）。
+三个入口都只指向同一个 `openMarkedMessagesModal()`，全部不依赖日志插件。右上角那枚走 Discord 自己的 `HeaderBarIcon`（`findComponentByCodeLazy(".HEADER_BAR_BADGE_BOTTOM,", 'position:"bottom"')`），注入点是 `toolbar: … mobileToolbar: …` 那个组件的补丁，跟日志插件用的是同一处、各自插自己的调用（补丁里的 `$self` 按插件实例替换，不会互相盖）。输入框那颗走 Vencord 的 `ChatButtons` API，它由内置插件 `ChatInputButtonAPI` 的补丁负责往里塞，所以这个 API 名字**必须写在 `dependencies` 里**：不声明的话 `addChatBarButton()` 一样跑得不声不响、不报错，但图标根本不会出现（`MessageDecorationsAPI` / `MemberListDecoratorsAPI` 同理）。
+
 
 ## 与 ShowMeYourName 的顺序
 
@@ -80,6 +82,8 @@
 
 写入分工：`addRecords` 只写库里还没有的（回溯会反复扫同一批消息，用 `put` 覆盖会把已知的 `DELETED` 洗回 `NORMAL`），`saveRecord` 才是无条件覆盖（编辑事件要盖掉旧内容）。
 
+两条回溯**必须串着发**：`fetchMarkedSourceMessages()` 在第一个 `await` 之前就把 `running` 置真，并排发（`Promise.all`）的话后跑的 `fetchCurrentChannel()` 会立刻撞上同一个闸门、被判成「正在跑」而整条跳过。真机表现就是弹窗开着却一条都没补进来，看着像「还是得靠日志插件」。
+
 ## 设置项
 
 | 键 | 默认 | 作用 |
@@ -130,7 +134,7 @@ node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链
 
 ```powershell
 cd "C:\Users\11028\Documents\.Hanako\usermark-tests\standalone"
-node build.mjs                 # 98 条，全绿才是 0 失败
+node build.mjs                 # 104 条，全绿才是 0 失败
 ```
 
 它用 `fake-idb.mjs` 顶掉 `indexedDB`（写入同样过 `structuredClone`，所以「把带 getter 的 flux Message 直接塞进库」在桩里也会像真机一样抛 DataCloneError），用 `stub-webpack.mjs` 顶掉 `RestAPI` / `FluxDispatcher` / 各种 store，然后跑真的 `records.ts` / `db.ts` / `capture.ts` / `backfill.ts`。钉住的是这几件事：
@@ -140,6 +144,7 @@ node build.mjs                 # 98 条，全绿才是 0 失败
 - 回溯：服务器频道走搜索接口、私聊走频道历史；整页才翻页（第二页 `offset=25`）；撞 429 立即收手不再发请求，普通报错只断当前这个用户；标记来源那条会被补进来且不会重复拉
 - 超过 `maxMarkedMessages` 裁到最新的 N 条
 - 取消标记后那个人的记录立刻不再显示，但行还在库里（重新标记就回来）
+- 闸门契约：并排发两条回溯时第二条必然 `skipped`（把坑本身钉住），串着发两条都跑到、库里两条都在
 - ⑨ 静态对齐：弹窗里每个 `cl("...")` 吐出的类名在 `styles.css` 都有规则、样式表里也没有没人认领的孤儿类名，状态类必须是带前缀的整名，令牌得在 Vencord 自带样式里有先例
 
 弹窗本身要真 Discord 才渲染得动，这块离线只验到类名和筛选逻辑；点开的表现还得实测。

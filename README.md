@@ -19,7 +19,7 @@ kettu/
 - 右键**人**或**他的消息** → 「标记」→ 写备注
 - 消息头、成员列表名字后面挂 `[被标记]`，悬停看备注和两个时间
 - 插件设置页有名单面板：搜索、编辑、删除
-- **自带「标记发言」弹窗**：输入框工具栏那枚图标，或名单面板右上角的按钮。被标记用户的发言进自己的 IndexedDB（`UserMarkMessagesIDB`），删除和编辑都留痕，**不装日志插件也能用**
+- **自带「标记发言」弹窗**：频道右上角那枚**问号**图标（或输入框工具栏那枚、或名单面板右上角的按钮）。被标记用户的发言进自己的 IndexedDB（`UserMarkMessagesIDB`），删除和编辑都留痕，**不装日志插件也能用**
 - 读数据的方式是直接读 Vencord 全局 `Settings.plugins.UserMark.marks`，所以别的插件也能复用这份名单
 
 ### 三个闸门
@@ -37,6 +37,7 @@ kettu/
 | `capture.ts` | 订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`，只记名单里的人；删除只改状态不丢正文；回调里的错统一吞成日志 |
 | `backfill.ts` | 回溯当前频道（服务器走搜索接口、私聊读频道历史）、按 id 精确补「用来标记的那条」、按 `maxMarkedMessages` 裁剪 |
 | `MarkedMessagesModal.tsx` | 「标记发言」弹窗：名单带 + 发言列表 + 搜索/排序/拉取/清空，行可跳回原消息、复制内容、改备注、取消标记 |
+| `HeaderButton.tsx` | 频道右上角那枚问号图标：补丁塞进 Discord 自己的 `HeaderBarIcon` 那一排，点开同一个弹窗 |
 
 设置里三个新开关：`logMarkedMessages`（存不存，默认开）、`maxMarkedMessages`（总条数上限，默认 2000，0 = 不限制）、`markedMessagesPerPage`（弹窗一屏多少条，默认 100）。
 
@@ -86,7 +87,7 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | --- | --- |
 | 桌面标记 / 徽标 / 名单面板 | 已验证 |
 | 桌面端离线自测 | 126 条断言全绿（settings 层 / 徽标+面板 / 菜单→弹窗→保存），桩在 `.Hanako\usermark-tests\vencord` |
-| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 类名对齐） | 离线 98 条断言全绿，桩在 `.Hanako\usermark-tests\standalone`；**弹窗真机待验证**（离线只验到类名与筛选，渲染要真 Discord） |
+| 桌面自带记录（库 / 捕获 / 回溯 / 裁剪 / 筛选 / 闸门串行 / 类名对齐） | 离线 104 条断言全绿，桩在 `.Hanako\usermark-tests\standalone`；**弹窗真机待验证**（离线只验到类名与筛选，渲染要真 Discord） |
 | 桌面日志页签 / 当前频道回溯 / 名单带 | 已验证构建，真机行为待你确认 |
 | 备注弹窗点保存不关窗 | 已修（`onClose` + `closeAllModals` 双保险） |
 | 设置文件被探针抓的源码撑到 287KB | 已修（撤掉 `probe.ts`，启动时清掉遗留数据） |
