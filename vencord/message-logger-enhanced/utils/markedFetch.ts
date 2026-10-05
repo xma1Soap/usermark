@@ -70,9 +70,28 @@ export async function fetchMarkedHistory(force = false): Promise<FetchMarkedResu
             ? await fetchFromGuildSearch({ guildId, channelId, marks, userIds, result: { ...empty, channelId } })
             : await fetchFromChannelHistory({ channelId, marks, userIds, result: { ...empty, channelId } });
 
-        await fetchSourceMessages(marks, result);
+        await fetchSourceMessages(Object.values(marks), result);
 
         return result;
+    } finally {
+        running = false;
+    }
+}
+
+/**
+ * 只把「用来标记的那条消息」补进日志库，返回新增条数。
+ * 页签翻页一次只展示前 N 条，来源消息往往是标记之前很久的一条，光靠频道回溯挤不进第一页；
+ * 而这条一旦没进库，日志里就完全没有能看到「标记来源」标识的行。
+ * 弹窗一打开就调它，不等切到「标记用户发言」页签，也不受 60 秒冷却限制。
+ */
+export async function fetchMarkedSourceMessages(): Promise<number> {
+    if (running) return 0;
+
+    running = true;
+    try {
+        const result: FetchMarkedResult = { added: 0, pages: 0, users: 0 };
+        await fetchSourceMessages(Object.values(getMarkedMarks()), result);
+        return result.added;
     } finally {
         running = false;
     }
@@ -83,10 +102,10 @@ export async function fetchMarkedHistory(force = false): Promise<FetchMarkedResu
  * 它必然早于标记时刻，靠频道翻页不保证能碰到，所以单独保证一次。
  */
 async function fetchSourceMessages(
-    marks: Record<string, MarkedInfo>,
+    entries: MarkedInfo[],
     result: FetchMarkedResult
 ): Promise<void> {
-    for (const info of Object.values(marks)) {
+    for (const info of entries) {
         const { sourceId, sourceChannelId } = info;
         if (!sourceId || !sourceChannelId) continue;
 

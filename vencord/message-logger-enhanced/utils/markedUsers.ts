@@ -4,7 +4,10 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  */
 
-import { Settings } from "@api/Settings";
+import { PlainSettings, Settings, SettingsStore } from "@api/Settings";
+import { useEffect, useState } from "@webpack/common";
+
+const MARKS_PATH = "plugins.UserMark.marks";
 
 /**
  * 读取 UserMark 插件的标记名单。
@@ -72,4 +75,68 @@ export function getMarkedMarks(): Record<string, MarkedInfo> {
     } catch {
         return {};
     }
+}
+
+/**
+ * 组件里用的响应式名单：UserMark 那边改备注、本插件这边取消标记，都会推进来重渲染。
+ * 不订阅的话，弹窗打开期间名单变了行高亮也不会刷新（旧代码在每行的 useMemo 里读一次，
+ * 依赖只有消息 id，等于挂载时拍一次快照）。
+ */
+export function useMarkedMarks(): Record<string, MarkedInfo> {
+    const [marks, setMarks] = useState(getMarkedMarks);
+
+    useEffect(() => {
+        const onChange = () => setMarks(getMarkedMarks());
+        SettingsStore.addChangeListener(MARKS_PATH, onChange);
+        // 挂起到订阅之间可能被改过，补读一次
+        onChange();
+
+        return () => SettingsStore.removeChangeListener(MARKS_PATH, onChange);
+    }, []);
+
+    return marks;
+}
+
+/**
+ * 读一份能安全改、能安全写回的纯数据。
+ * 必须走 PlainSettings：Settings 是 Proxy，从它身上展开对象会把每条记录也包成 Proxy，
+ * Proxy 进不了 Electron IPC 的结构化克隆（DataCloneError），设置文件就不会落盘。
+ */
+function readMarksPlain(): Record<string, any> {
+    try {
+        const raw = PlainSettings.plugins?.UserMark?.marks;
+        if (raw == null || typeof raw !== "object") return {};
+        return JSON.parse(JSON.stringify(raw));
+    } catch {
+        return {};
+    }
+}
+
+function writeMarks(marks: Record<string, any>): boolean {
+    try {
+        // 写 store 不写 plain：只有 store 的 set 钩子会通知监听器并触发落盘
+        Settings.plugins.UserMark.marks = marks;
+        return true;
+    } catch (e) {
+        console.error("[MessageLogger] 写入 UserMark 标记名单失败", e);
+        return false;
+    }
+}
+
+/** 只改备注，其余字段（标记时间、来源消息、最新发言时间）原样保留 */
+export function setMarkedNote(userId: string, note: string): boolean {
+    const marks = readMarksPlain();
+    const entry = marks[userId];
+    if (!entry) return false;
+
+    marks[userId] = { ...entry, note: note.trim() };
+    return writeMarks(marks);
+}
+
+export function deleteMarkedUser(userId: string): boolean {
+    const marks = readMarksPlain();
+    if (!(userId in marks)) return false;
+
+    delete marks[userId];
+    return writeMarks(marks);
 }

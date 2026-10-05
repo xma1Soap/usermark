@@ -33,12 +33,13 @@ kettu/
 
 | 文件 | 改动 |
 | --- | --- |
-| `utils/markedUsers.ts` | 新增：读 UserMark 名单 |
-| `utils/markedFetch.ts` | 新增：按标记时间回溯当前频道发言 |
-| `components/MarkedUsersStrip.tsx` | 新增：标签栏下的名单带（头像 + 当前频道名字/ID + 备注） |
+| `utils/markedUsers.ts` | 新增：读写 UserMark 名单（读 + `useMarkedMarks()` 订阅 + 改备注 / 取消标记） |
+| `utils/markedFetch.ts` | 新增：回溯当前频道发言，并按 id 精确回源「用来标记的那条」 |
+| `components/MarkedUsersStrip.tsx` | 新增：标签栏下的名单带（头像 + 当前频道名字/ID + 备注），右键可查看来源 / 修改标记 / 取消标记 |
+| `components/MarkNoteModal.tsx` | 新增：日志插件自带的备注编辑弹窗（不 import UserMark 的模块） |
 | `db.ts` | 新增 `NORMAL` 状态与两个标记查询 |
 | `components/hooks.ts` | 页签分流 |
-| `components/LogsModal.tsx` | 新增「标记用户发言」页签、名单带、拉取按钮 |
+| `components/LogsModal.tsx` | 新增「标记用户发言」页签、名单带、拉取按钮；行右键加修改 / 取消标记 |
 | `index.tsx` | `MESSAGE_CREATE` 时把标记用户的发言入库 |
 | `settings.tsx` | 新增 `logMarkedUsers` 开关 |
 | `styles.css` | 名单带样式（走现役主题令牌，亮暗两侧都可读） |
@@ -78,5 +79,9 @@ https://raw.githubusercontent.com/xma1Soap/<本仓库>/main/kettu/
 | `marks` 是坏数据时消息头 / 设置页整块崩 | 已修（读取统一兜底，克隆结果按存储对象身份缓存） |
 | 名单带只显示备注，暗色主题下几乎看不见 | 已修（改成头像 + 当前频道名字/ID + 备注；配色换到现役主题令牌，`--header-primary` 已被 Discord 移除，取不到值退成 `#111`） |
 | 名单带折叠 / 选中态没生效 | 已修（状态类得写整名 `msg-logger-marked-strip-collapsed`，`.strip.collapsed` 这种复合选择器被 `classNameFactory` 的前缀行为永远匹配不上） |
-| 名单带离线自测 | 42 条断言全绿（折叠阈值 / +N / 展开收起 / 名字回退链 / 点选 / 类名与样式表对齐），桩在 `.Hanako\usermark-tests\strip` |
+| 名单带离线自测 | 61 条断言全绿（折叠阈值 / +N / 展开收起 / 名字回退链 / 点选 / 右键菜单 / 取消标记与改备注写回 / 类名与样式表对齐），桩在 `.Hanako\usermark-tests\strip` |
+| 点开日志弹窗整个 Discord 崩掉 | 已修（名单带曾在模块顶层快照 `waitForStore` 异步赋值的 store，拿到的是 undefined）；桩已改成会复现这个时序，重新引入会直接红 |
+| 「标记来源」标识看不到 | 已修（代码与数据都完好，问题是那条消息不在当前页签首页：弹窗一开就按 id 回源补一次，标签右键再加 `from:<人> message:<那条>` 直达） |
+| 来源标识不随名单变化刷新 | 已修（原来每行 `useMemo` 只依赖消息 id，等于挂载时拍一次快照；现在弹窗订阅名单，行从上面拿结果） |
+| 日志里改备注 / 取消标记 | 已加（名单标签右键 + 记录行右键，作者在被标记名单里才出现这两项） |
 | 手机版 | 无弹窗重制版已推送，离线 45 条断言全绿，**真机待验证** |

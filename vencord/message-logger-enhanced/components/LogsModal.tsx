@@ -21,12 +21,13 @@ import { DBMessageRecord, deleteMessageIDB, deleteMessagesBulkIDB } from "../db"
 import { settings } from "../index";
 import { LoggedMessage, LoggedMessageJSON } from "../types";
 import { messageJsonToMessageClass } from "../utils";
-import { fetchMarkedHistory } from "../utils/markedFetch";
-import { getMarkedMarks } from "../utils/markedUsers";
+import { fetchMarkedHistory, fetchMarkedSourceMessages } from "../utils/markedFetch";
+import { deleteMarkedUser, getMarkedMarks, useMarkedMarks } from "../utils/markedUsers";
 import { importLogs } from "../utils/settingsUtils";
 import { ClearLogsButton } from "./ClearLogsButton";
 import { useMessages } from "./hooks";
 import { MarkedUsersStrip } from "./MarkedUsersStrip";
+import { openMarkNoteModal } from "./MarkNoteModal";
 
 export interface MessagePreviewProps {
     className: string;
@@ -64,14 +65,34 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
 
     const { messages, total, statusTotal, pending, reset } = useMessages(queryEh, currentTab, sortNewest, numDisplayedMessages);
 
-    // 搜索框里如果是 from:<id> 这种纯用户筛选，就把对应标签高亮
+    // 名单在弹窗开着的时候也会被改（右键取消标记），所以订阅变化而不是挂载时拍一次快照
+    const marks = useMarkedMarks();
+    const markSourceIds = useMemo(
+        () => new Set(Object.values(marks).map(m => m.sourceId).filter((id): id is string => Boolean(id))),
+        [marks]
+    );
+    const markedIds = useMemo(() => new Set(Object.keys(marks)), [marks]);
+
+    // 搜索框里带 from:<id> 就把对应标签高亮（「查看标记来源」会在后面再接 message:<id>，所以不锚结尾）
     const activeMarkedId = useMemo(() => {
-        const match = /^(?:from|user):(\S+)$/.exec(queryEh.trim());
+        const match = /^(?:from|user):(\S+)/.exec(queryEh.trim());
         return match?.[1] ?? null;
     }, [queryEh]);
 
     const [fetchingMarked, setFetchingMarked] = useState(false);
     const autoFetchedRef = useRef(false);
+    const sourceFetchedRef = useRef(false);
+
+    // 「标记来源」那条必然早于标记时刻，页签一次只展示前 N 条，光靠频道回溯它经常挤不进第一页，
+    // 于是行都不在列表里，标识自然看不见。弹窗一开就按 id 精确补一次，不等切页签。
+    useEffect(() => {
+        if (sourceFetchedRef.current) return;
+        sourceFetchedRef.current = true;
+
+        fetchMarkedSourceMessages()
+            .then(added => added > 0 && reset())
+            .catch(() => { /* 补不到就用库里那份，标识顶多多等一次手动拉取 */ });
+    }, []);
 
     const runMarkedFetch = async (force: boolean) => {
         if (fetchingMarked) return;
@@ -144,6 +165,15 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                 </TabBar>
                 <MarkedUsersStrip
                     activeUserId={activeMarkedId}
+                    onMarksChanged={reset}
+                    onViewSource={(userId, sourceId) => {
+                        // message:<id> 走全量扫描再过滤，不受一次只显示 N 条的限制
+                        setQuery(`from:${userId} message:${sourceId}`);
+                        setCurrentTab(LogTabs.MARKED);
+                        fetchMarkedSourceMessages()
+                            .then(added => added > 0 && reset())
+                            .catch(() => { /* 拉不到就是库里真没有，列表给个空结果 */ });
+                    }}
                     onPick={userId => {
                         if (!userId) {
                             setQuery("");
@@ -175,6 +205,8 @@ export function LogsModal({ modalProps, initalQuery }: Props) {
                                 tab={currentTab}
                                 sortNewest={sortNewest}
                                 reset={reset}
+                                markSourceIds={markSourceIds}
+                                markedIds={markedIds}
                                 handleLoadMore={() => setNumDisplayedMessages(e => e + settings.store.messagesToDisplayAtOnceInLogs)}
                             />
                         )}
@@ -237,10 +269,14 @@ interface LogContentProps {
     visibleMessages: DBMessageRecord[];
     canLoadMore: boolean;
     reset: () => void;
+    /** 各人被标记时用的那条消息 id，命中的行挂「标记来源」标识 */
+    markSourceIds: Set<string>;
+    /** 被标记名单，决定行右键菜单给不给「修改标记 / 取消标记」 */
+    markedIds: Set<string>;
     handleLoadMore: () => void;
 }
 
-function LogsContent({ visibleMessages, canLoadMore, sortNewest, tab, reset, handleLoadMore }: LogContentProps) {
+function LogsContent({ visibleMessages, canLoadMore, sortNewest, tab, reset, markSourceIds, markedIds, handleLoadMore }: LogContentProps) {
     if (visibleMessages.length === 0)
         return <NoResults tab={tab} />;
 
@@ -252,6 +288,8 @@ function LogsContent({ visibleMessages, canLoadMore, sortNewest, tab, reset, han
                         key={message.id}
                         log={{ message }}
                         reset={reset}
+                        isMarkSource={markSourceIds.has(message.id)}
+                        isMarked={markedIds.has(message.author?.id)}
                         isGroupStart={isGroupStart(message, visibleMessages[i - 1]?.message, sortNewest)}
                     />
                 ))}
@@ -339,11 +377,15 @@ interface LMessageProps {
     log: { message: LoggedMessageJSON; };
     isGroupStart: boolean,
     reset: () => void;
+    /** 这条就是某人被标记时用的那条消息 */
+    isMarkSource: boolean;
+    /** 作者在被标记名单里 */
+    isMarked: boolean;
 }
 /** 正在按 id补人的名单，防止同一条消息反复发请求 */
 const pendingAuthorFetches = new Set<string>();
 
-function LMessage({ log, isGroupStart, reset, }: LMessageProps) {
+function LMessage({ log, isGroupStart, reset, isMarkSource, isMarked, }: LMessageProps) {
     const [, bumpAuthor] = useState(0);
     const message = useMemo(() => messageJsonToMessageClass(log), [log]);
 
@@ -366,19 +408,6 @@ function LMessage({ log, isGroupStart, reset, }: LMessageProps) {
         const live = UserStore.getUser(authorId);
         if (live && message.author !== live) (message as any).author = live;
     }
-
-    // 这条是不是某个人被标记时用的那条消息，是就高亮出来
-    const isMarkSource = useMemo(() => {
-        try {
-            const sourceIds = Object.values(getMarkedMarks())
-                .map(entry => entry.sourceId)
-                .filter((id): id is string => Boolean(id));
-
-            return sourceIds.includes(log.message.id);
-        } catch {
-            return false;
-        }
-    }, [log.message.id]);
 
     // console.log(message);
 
@@ -453,6 +482,34 @@ function LMessage({ log, isGroupStart, reset, }: LMessageProps) {
                                 />
                             )
                         }
+
+                        {isMarked && (
+                            <Menu.MenuItem
+                                key="usermark-edit"
+                                id="usermark-edit"
+                                label="修改标记"
+                                action={() => {
+                                    const info = getMarkedMarks()[message.author.id];
+                                    openMarkNoteModal({
+                                        id: message.author.id,
+                                        name: message.author.globalName || message.author.username,
+                                        note: info?.note ?? ""
+                                    });
+                                }}
+                            />
+                        )}
+
+                        {isMarked && (
+                            <Menu.MenuItem
+                                key="usermark-unmark"
+                                id="usermark-unmark"
+                                label="取消标记"
+                                color="danger"
+                                action={() => {
+                                    if (deleteMarkedUser(message.author.id)) reset();
+                                }}
+                            />
+                        )}
 
                         <Menu.MenuItem
                             key="delete-log"
