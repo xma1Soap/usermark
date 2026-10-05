@@ -13,6 +13,7 @@ import { Margins } from "@components/margins";
 import { Paragraph } from "@components/Paragraph";
 import { showToast, TextInput, useState } from "@webpack/common";
 
+import { openMarkedMessagesModal } from "./MarkedMessagesModal";
 import { openMarkModal } from "./MarkModal";
 import { asMarkMap, MarkEntry, removeMark, settings } from "./settings";
 import { formatTimestamp } from "./utils";
@@ -113,6 +114,9 @@ export function MarkPanel() {
                 <BaseText size="md" weight="semibold">
                     被标记名单（{rows.length}{trimmedQuery ? ` / ${total}` : ""}）
                 </BaseText>
+                <Button variant="secondary" size="min" onClick={openMarkedMessagesModal}>
+                    查看标记发言
+                </Button>
             </Flex>
 
             <TextInput

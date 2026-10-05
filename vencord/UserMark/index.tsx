@@ -6,12 +6,15 @@
 
 import "./styles.css";
 
-import { PencilIcon } from "@components/Icons";
+import { addChatBarButton, ChatBarButton, removeChatBarButton } from "@api/ChatButtons";
+import { LogIcon, PencilIcon } from "@components/Icons";
 import definePlugin from "@utils/types";
 import { Channel, Message, User } from "@vencord/discord-types";
 import { Menu, showToast } from "@webpack/common";
 
+import { startCapture, stopCapture } from "./capture";
 import { registerDecorators, unregisterDecorators } from "./Decorations";
+import { openMarkedMessagesModal } from "./MarkedMessagesModal";
 import { MarkTarget, openMarkModal } from "./MarkModal";
 import { getMark, purgeProbeLeftovers, removeMark, settings, sourceFromMessage } from "./settings";
 
@@ -56,7 +59,7 @@ function pushMarkItems(children: Array<any | null>, target: MarkTarget): void {
 
 export default definePlugin({
     name: "UserMark",
-    description: "右键一个人或他的消息即可「标记」：挂自定义备注，名字后面显示 [被标记]，设置页可搜索全部被标记用户的标记时间与最新发言时间。",
+    description: "右键一个人或他的消息即可「标记」：挂自定义备注，名字后面显示 [被标记]；自带本地记录库，能直接看被标记用户的发言，不依赖任何日志插件。",
     searchTerms: ["mark", "tag", "note", "标记", "备注", "被标记"],
     tags: ["Appearance", "Friends", "Utility"],
     authors: [{ name: "星薄荷", id: 0n }],
@@ -68,10 +71,23 @@ export default definePlugin({
     start() {
         registerDecorators();
         purgeProbeLeftovers();
+        startCapture();
+
+        addChatBarButton(
+            "vc-usermark-logs",
+            () => (
+                <ChatBarButton tooltip="标记发言" onClick={openMarkedMessagesModal}>
+                    <LogIcon width={20} height={20} />
+                </ChatBarButton>
+            ),
+            LogIcon
+        );
     },
 
     stop() {
         unregisterDecorators();
+        stopCapture();
+        removeChatBarButton("vc-usermark-logs");
     },
 
     contextMenus: {

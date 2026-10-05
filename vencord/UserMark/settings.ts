@@ -69,6 +69,21 @@ export const settings = definePluginSettings({
         description: "在成员列表的名字后面也显示 [被标记]",
         default: true,
     },
+    logMarkedMessages: {
+        type: OptionType.BOOLEAN,
+        description: "把被标记用户的发言存进 UserMark 自己的本地库（IndexedDB），不依赖任何日志插件",
+        default: true,
+    },
+    maxMarkedMessages: {
+        type: OptionType.NUMBER,
+        description: "本地库最多存多少条被标记发言，超了删最旧的；0 = 不限制",
+        default: 2000,
+    },
+    markedMessagesPerPage: {
+        type: OptionType.NUMBER,
+        description: "「标记发言」弹窗一屏先显示多少条",
+        default: 100,
+    },
 });
 
 /**

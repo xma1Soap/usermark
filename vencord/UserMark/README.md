@@ -1,6 +1,6 @@
 # UserMark 标记
 
-右键一个人或他的消息 → 「标记」→ 给他挂一条自定义备注。被标记的人在名字后面会显示一枚红色的 `[被标记]`，鼠标悬停能看到备注和两个时间。设置页里有一份可搜索的完整名单。
+右键一个人或他的消息 → 「标记」→ 给他挂一条自定义备注。被标记的人在名字后面会显示一枚红色的 `[被标记]`，鼠标悬停能看到备注和两个时间。设置页里有一份可搜索的完整名单，另外插件**自带一个本地记录库**，能直接翻被标记用户说过什么——删除、编辑都会留痕，不需要装任何日志插件。
 
 ## 功能
 
@@ -10,7 +10,9 @@
 | 右键消息 | 同上，取该消息的作者 |
 | 消息头 | 名字后面挂 `[被标记]` 徽标 |
 | 成员列表 | 名字后面挂 `[被标记]` 徽标（可在设置里关） |
-| Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑和删除 |
+| 输入框工具栏 | 一枚「标记发言」图标（`LogIcon`），点开自己的记录弹窗 |
+| Vencord 设置 → UserMark → 齿轮 | 「被标记名单」面板：搜索框 + 每人的备注、被标记时间、最新发言时间，支持编辑、删除，右上角有「查看标记发言」 |
+| 「标记发言」弹窗 | 名单带（每人一枚标签）+ 发言列表：头像、当前昵称、备注、频道、时间、状态（已编辑 / 已删除）、附件与嵌入数量、正文。点一行跳回原消息，右键一行可「跳到原消息 / 复制内容 / 修改标记 / 取消标记」 |
 
 ## 与 ShowMeYourName 的顺序
 
@@ -48,6 +50,45 @@
 
 读写各有一条不能破的规矩：**读走 `settings.plain` 并且 JSON 拍平**（`settings.store` 是 Proxy，从它身上展开出来的对象进不了 Electron IPC 的结构化克隆，写盘会静默失败，重启就只剩第一条）；**写一律整体换新对象**，不原地改——原地改既会让 Vencord 的相等判断跳过落盘，也会污染 `getMarks()` 的缓存。
 
+### 发言记录：自己的 IndexedDB
+
+被标记用户的发言**不进设置文件**，进的是自己的库：`indexedDB.open("UserMarkMessagesIDB")`，object store `messages`，keyPath 是消息 id，不建索引（条数被上限封顶，`getAll()` 读出来在内存里筛）。一条记录长这样（`records.ts` 的 `MarkedRecord`）：
+
+```json
+{
+  "id": "消息ID",
+  "authorId": "用户ID",
+  "channelId": "频道ID",
+  "guildId": "服务器ID 或 null",
+  "timestamp": 1790000000000,
+  "editedTimestamp": null,
+  "content": "正文，超 2000 字裁断",
+  "status": "NORMAL | EDITED | DELETED",
+  "attachments": ["文件名，最多 10 个"],
+  "embedCount": 0
+}
+```
+
+四条链路，全都不碰日志插件：
+
+- **实时捕获**（`capture.ts`）：订阅 `MESSAGE_CREATE` / `MESSAGE_UPDATE` / `MESSAGE_DELETE` / `MESSAGE_DELETE_BULK`。只落名单里的人、`type === 0`、非临时消息（`flags & 64`）、非 pending/failed。编辑走 `saveRecord` 覆盖（`MESSAGE_UPDATE` 也发给置顶和加表情，而且常常只带变化字段，所以以 `MessageStore.getMessage` 拿到的完整消息为准，且必须有 `edited_timestamp`）；删除**只把状态改成 `DELETED`**，正文留着——这才是要留档的东西。网关回调里抛出去的错误统一吞成日志，不然满屏报错。
+- **回溯当前频道**（`backfill.ts`）：服务器频道走 `GET /guilds/{id}/messages/search?channel_id=&author_id=`，一人一页（25 条，最多 10 页）；私聊 / 群聊没有搜索接口，改读 `GET /channels/{id}/messages`（100 条，最多 4 页）再按名单过滤。请求间隔 250ms，撞 429 立即收手，自动拉取之间至少隔 60 秒，工具栏「拉取本频道」是强制的。
+- **标记来源那条**：弹窗一打开先按 `sourceMessage.id` + `channelId` 精确回源补一次。这条必然早于标记时刻，靠翻页经常挤不进首页，所以单独拉。
+- **裁剪**：`maxMarkedMessages` 是总条数上限，超了删最旧的。捕获侧每写 25 条才整库扫一次，别每条消息都读一遍库。
+
+写入分工：`addRecords` 只写库里还没有的（回溯会反复扫同一批消息，用 `put` 覆盖会把已知的 `DELETED` 洗回 `NORMAL`），`saveRecord` 才是无条件覆盖（编辑事件要盖掉旧内容）。
+
+## 设置项
+
+| 键 | 默认 | 作用 |
+| --- | --- | --- |
+| `marks` | `{}` | 名单本体，写进 Vencord 设置文件 |
+| `markPanel` | — | 设置页里的名单面板 |
+| `memberListBadge` | 开 | 成员列表后面也挂 `[被标记]` |
+| `logMarkedMessages` | 开 | 把被标记用户的发言存进自己的 IndexedDB；关掉只是不再新增，已有记录保留 |
+| `maxMarkedMessages` | 2000 | 本地库总条数上限，超了删最旧的；`0` = 不限制 |
+| `markedMessagesPerPage` | 100 | 「标记发言」弹窗一屏先显示多少条 |
+
 ## 构建与部署
 
 ```powershell
@@ -83,9 +124,27 @@ node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链
 - 标记成功不弹 toast、`onClose()` 抛错也照样用 `closeAllModals()` 兜底关窗（都是实测踩出来的，别改回去）
 - 启动时清探针遗留数据是幂等的：没有遗留就一次盘都不写
 
-## 与消息记录器的联动
+自带库这条链路另有一套桩，在 `C:\Users\11028\Documents\.Hanako\usermark-tests\standalone\`：
 
-标记名单不只存在 UserMark 里。`vc-message-logger-enhanced`（日志插件）会读同一份数据：
+```powershell
+cd "C:\Users\11028\Documents\.Hanako\usermark-tests\standalone"
+node build.mjs                 # 98 条，全绿才是 0 失败
+```
+
+它用 `fake-idb.mjs` 顶掉 `indexedDB`（写入同样过 `structuredClone`，所以「把带 getter 的 flux Message 直接塞进库」在桩里也会像真机一样抛 DataCloneError），用 `stub-webpack.mjs` 顶掉 `RestAPI` / `FluxDispatcher` / 各种 store，然后跑真的 `records.ts` / `db.ts` / `capture.ts` / `backfill.ts`。钉住的是这几件事：
+
+- 名单外的人、临时消息、pending/失败消息、非 `type === 0` 的消息都不落库；关掉 `logMarkedMessages` 就一条都不记
+- 删除只改 `status`，正文留着；`addRecords` 不会把已知的 `DELETED` 洗回 `NORMAL`
+- 回溯：服务器频道走搜索接口、私聊走频道历史；整页才翻页（第二页 `offset=25`）；撞 429 立即收手不再发请求，普通报错只断当前这个用户；标记来源那条会被补进来且不会重复拉
+- 超过 `maxMarkedMessages` 裁到最新的 N 条
+- 取消标记后那个人的记录立刻不再显示，但行还在库里（重新标记就回来）
+- ⑨ 静态对齐：弹窗里每个 `cl("...")` 吐出的类名在 `styles.css` 都有规则、样式表里也没有没人认领的孤儿类名，状态类必须是带前缀的整名，令牌得在 Vencord 自带样式里有先例
+
+弹窗本身要真 Discord 才渲染得动，这块离线只验到类名和筛选逻辑；点开的表现还得实测。
+
+## （可选）与消息记录器的联动
+
+UserMark 现在**自己就能记**，装不装日志插件都不影响上面那条链路。`vc-message-logger-enhanced`（日志插件）是另一套独立实现，它会读同一份名单，所以也带一份标记发言的视图：
 
 - 被标记用户发出的消息（非临时消息）会直接写进日志库，**不受日志插件的黑白名单限制**
 - 日志弹窗的「幽灵提及」右边多出一个「标记用户发言」页签
@@ -138,6 +197,9 @@ node build2.mjs entry3.mjs  # 右键菜单 -> 弹窗 -> 保存 的整条链
 - `authors` 用的是占位 id `0n`，要显示你的 Discord 头像就把 `index.tsx` 里的 id 换成真实用户 ID。
 - 右键私聊列表里的会话本身给的是频道菜单（`channel-context`），要标记那个人得走他的消息或资料弹层。
 - 最新发言时间只覆盖插件启用之后、且消息实际渲染过的记录。
+- 本地库存的是**正文和附件文件名**，不存附件本体、不存 embed / 卡片的正文（只记数量）。编辑是覆盖式的：留最新正文加一个 `EDITED` 状态，不保留改之前的原文（要看编辑历史得用日志插件）。
+- 网关只推当前订阅的频道，弹窗里只回溯**当前打开的那个频道**。没打开过的服务器不会自己补，得先切过去再点「拉取本频道」。
+- 「取消标记」不会删那个人的历史发言，只是不再显示、也不再新增；要腾地方就点弹窗里的「清空记录」，或者靠 `maxMarkedMessages` 裁。
 
 ## 撤掉的调试探针
 
