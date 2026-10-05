@@ -14,7 +14,7 @@ import { Paragraph } from "@components/Paragraph";
 import { showToast, TextInput, useState } from "@webpack/common";
 
 import { openMarkModal } from "./MarkModal";
-import { MarkEntry, removeMark, settings } from "./settings";
+import { asMarkMap, MarkEntry, removeMark, settings } from "./settings";
 import { formatTimestamp } from "./utils";
 
 interface Row {
@@ -25,10 +25,9 @@ interface Row {
 function matches(entry: MarkEntry, query: string): boolean {
     if (!query) return true;
 
-    const needle = query.toLowerCase();
-    return entry.username.toLowerCase().includes(needle)
-        || entry.note.toLowerCase().includes(needle)
-        || (entry.sourceMessage?.content ?? "").toLowerCase().includes(needle);
+    // 逐个判类型再比：条目可能来自设置同步或老版本，字段未必都在
+    return [entry.username, entry.note, entry.sourceMessage?.content]
+        .some(field => typeof field === "string" && field.toLowerCase().includes(query));
 }
 
 /** 标记时那条消息的一行摘要 */
@@ -97,11 +96,13 @@ function MarkRow({ userId, entry }: Row) {
 }
 
 export function MarkPanel() {
-    const { marks } = settings.use(["marks"]);
+    const marks = asMarkMap(settings.use(["marks"]).marks);
     const [query, setQuery] = useState("");
 
     const trimmedQuery = query.trim().toLowerCase();
+    const total = Object.keys(marks).length;
     const rows: Row[] = Object.entries(marks)
+        .filter(([, entry]) => entry && typeof entry === "object")
         .map(([userId, entry]) => ({ userId, entry }))
         .filter(({ entry }) => matches(entry, trimmedQuery))
         .sort((a, b) => (b.entry.lastMessageAt ?? 0) - (a.entry.lastMessageAt ?? 0));
@@ -110,7 +111,7 @@ export function MarkPanel() {
         <section className={Margins.top8}>
             <Flex alignItems="center" justifyContent="space-between" gap={8}>
                 <BaseText size="md" weight="semibold">
-                    被标记名单（{rows.length}{trimmedQuery ? ` / ${Object.keys(marks).length}` : ""}）
+                    被标记名单（{rows.length}{trimmedQuery ? ` / ${total}` : ""}）
                 </BaseText>
             </Flex>
 
@@ -124,7 +125,7 @@ export function MarkPanel() {
             <Flex flexDirection="column" gap="0.5em" className={Margins.top8}>
                 {rows.length === 0 && (
                     <Paragraph size="sm">
-                        {Object.keys(marks).length === 0
+                        {total === 0
                             ? "还没有标记任何人。右键一个人或他的消息，选「标记」。"
                             : "没有匹配的被标记用户。"}
                     </Paragraph>

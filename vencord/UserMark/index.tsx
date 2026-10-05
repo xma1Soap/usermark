@@ -13,8 +13,7 @@ import { Menu, showToast } from "@webpack/common";
 
 import { registerDecorators, unregisterDecorators } from "./Decorations";
 import { MarkTarget, openMarkModal } from "./MarkModal";
-import { startProbe, stopProbe } from "./probe";
-import { getMark, removeMark, settings, sourceFromMessage } from "./settings";
+import { getMark, purgeProbeLeftovers, removeMark, settings, sourceFromMessage } from "./settings";
 
 function toTarget(user: User, message?: Message): MarkTarget {
     return {
@@ -68,12 +67,11 @@ export default definePlugin({
 
     start() {
         registerDecorators();
-        startProbe();
+        purgeProbeLeftovers();
     },
 
     stop() {
         unregisterDecorators();
-        stopProbe();
     },
 
     contextMenus: {

@@ -9,7 +9,7 @@ import { addMessageDecoration, type MessageDecorationProps, removeMessageDecorat
 import { User } from "@vencord/discord-types";
 import { Tooltip, useEffect } from "@webpack/common";
 
-import { MarkEntry, recordMessage, settings } from "./settings";
+import { asMarkMap, MarkEntry, recordMessage, settings } from "./settings";
 import { badgeTooltip, toMs } from "./utils";
 
 function MarkBadge({ entry }: { entry: MarkEntry; }) {
@@ -29,7 +29,7 @@ function MarkBadge({ entry }: { entry: MarkEntry; }) {
  * 该槽位渲染在作者名之后，因此天然排在 ShowMeYourName 拼出来的昵称后面。
  */
 function MessageMarkBadge({ message }: MessageDecorationProps) {
-    const { marks } = settings.use(["marks"]);
+    const marks = asMarkMap(settings.use(["marks"]).marks);
 
     const userId: string | undefined = message?.author?.id;
     const entry = userId ? marks[userId] : undefined;
@@ -49,7 +49,7 @@ function MessageMarkBadge({ message }: MessageDecorationProps) {
 function MemberListMarkBadge({ user }: { user: User; }) {
     const { marks, memberListBadge } = settings.use(["marks", "memberListBadge"]);
 
-    const entry = user?.id ? marks[user.id] : undefined;
+    const entry = user?.id ? asMarkMap(marks)[user.id] : undefined;
     if (!memberListBadge || !entry) return null;
 
     return <MarkBadge entry={entry} />;
